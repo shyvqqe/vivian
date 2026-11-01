@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import traceback
 
 import discord
@@ -185,6 +186,11 @@ async def on_ready():
     daily_mod = commands.get("daily")
     if daily_mod and hasattr(daily_mod, "daily_summary_loop"):
         _start_loop(daily_mod.daily_summary_loop)
+
+    if not getattr(bot, "_web_music_bridge_task", None) or bot._web_music_bridge_task.done():
+        from vivian import music_web_bridge
+        bot._web_music_bridge_task = asyncio.create_task(music_web_bridge.run(bot))
+        print("[Vivian] Music bridge task started", flush=True)
 
     print("[Vivian] Ready", flush=True)
 

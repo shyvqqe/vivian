@@ -6,7 +6,7 @@ from collections import deque
 from datetime import datetime
 import time
 
-from core import config, database, state
+from core import config, database, feature_storage, state
 from vivian import ambient_state, memory_state
 
 
@@ -43,32 +43,26 @@ async def guarded_memory_write(writer, scope, record, facts):
             return True  # Retire a stale pending archive job without resurrecting its source.
         from vivian.memory import _ai_memory_fact_candidates
         candidates = _ai_memory_fact_candidates(record["text"]) if record["role"] == "user" else {}
-        fact_keys = set(facts) | set(candidates)
-        if fact_keys and memory_state.AI_MEMORY_READY and database.db_pool is not None:
-            try:
-                async with asyncio.timeout(3), database.db_pool.connection() as connection:
-                    cursor = await connection.execute(
-                        """SELECT fact_key, content, source_message_id, updated_at
-                        FROM elis_private.member_facts WHERE guild_id = %s AND channel_id = %s
-                        AND user_id = %s AND fact_key = ANY(%s)""",
-                        (*scope, record["author_id"], list(fact_keys)),
-                    )
-                    for key, text, source, updated in [row async for row in cursor]:
-                        entry = {"text": text, "source": source, "timestamp": updated.timestamp()}
-                        merge_control_fact(scope, record["author_id"], key, entry)
-                        personal = memory_state.AI_MEMORY_FACTS.setdefault(scope, {}).setdefault(record["author_id"], {})
-                        current = personal.get(key)
-                        if current is None or source > current["source"]:
-                            personal[key] = entry
-            except Exception as error:
-                print(f"[AI Memory] Fact guard read deferred; channel={scope[1]}; error={error!r}", flush=True)
-                return False
         accepted = filter_fact_candidates(scope, record["author_id"], record["message_id"], facts)
         current_candidates = filter_fact_candidates(scope, record["author_id"], record["message_id"], candidates)
         if candidates.keys() - current_candidates.keys():
             _purge_sources(scope, record["author_id"], {record["message_id"]})
             return True  # Includes an old source replay after restart, not just pending RAM jobs.
-        return await writer(scope, record, accepted)
+        result = await writer(scope, record, accepted, candidates)
+        if result is None:
+            return False
+        archived, rows = result
+        for key, text, source, updated in rows:
+            entry = {"text": text, "source": source,
+                     "timestamp": updated.timestamp() if isinstance(updated, datetime) else updated}
+            merge_control_fact(scope, record["author_id"], key, entry)
+            personal = memory_state.AI_MEMORY_FACTS.setdefault(scope, {}).setdefault(record["author_id"], {})
+            current = personal.get(key)
+            if current is None or source >= current["source"]:
+                personal[key] = entry
+        if not archived:
+            _purge_sources(scope, record["author_id"], {record["message_id"]})
+        return True
 
 
 async def guarded_memory_load(loader, scope):
@@ -135,6 +129,41 @@ def _sanitized_case(case, sources, action_id):
     return result
 
 
+def _change_local(connection, case_key, action_id, values, records, active, case, now):
+    from vivian import diagnostic_store, memory_store
+
+    memory_store.local_schema(connection)
+    scope, uid = case_key[:2], case_key[2]
+    stored_case = diagnostic_store.read_local_case(connection, case_key)
+    if stored_case is not None and (case is None or stored_case["revision"] >= case["revision"]):
+        case = stored_case
+    rows = connection.execute(
+        """SELECT message_id, author_id, audience_id, role, content FROM ai_chat_messages
+        WHERE guild_id = ? AND channel_id = ? AND message_id <= ? AND (author_id = ? OR audience_id = ?)
+        ORDER BY message_id DESC LIMIT ?""",
+        (*scope, action_id, uid, uid, memory_state.AI_MEMORY_CHANNEL_LIMIT),
+    )
+    records.extend({"message_id": mid, "author_id": author, "audience_id": audience, "role": role, "text": text}
+                   for mid, author, audience, role, text in rows)
+    sources = _source_ids(records, uid, values.keys(), action_id, active)
+    connection.executemany(
+        "DELETE FROM ai_chat_messages WHERE guild_id = ? AND channel_id = ? AND message_id = ?",
+        [(*scope, mid) for mid in sources],
+    )
+    connection.executemany(
+        """INSERT INTO ai_member_facts
+        (guild_id, channel_id, user_id, fact_key, content, source_message_id, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (guild_id, channel_id, user_id, fact_key) DO UPDATE SET
+        content = excluded.content, source_message_id = excluded.source_message_id,
+        updated_at = excluded.updated_at WHERE ai_member_facts.source_message_id <= excluded.source_message_id""",
+        [(*case_key, name, text, action_id, now) for name, text in values.items()],
+    )
+    sanitized_case = _sanitized_case(case, sources, action_id)
+    if sanitized_case is not None:
+        diagnostic_store.write_local_case(connection, case_key, sanitized_case)
+    return sources, sanitized_case
+
+
 async def change_personal_facts(scope, uid, action_id, *, key=None, replacement=None, clear=False):
     """Explicit owner action. Blank durable rows are 90-day tombstones, not public facts."""
     from vivian import memory_store
@@ -152,15 +181,23 @@ async def change_personal_facts(scope, uid, action_id, *, key=None, replacement=
             return 0
         records = list(memory_state.AI_MEMORY_CHANNELS.get(scope, ()))
         now = time.time()
-        persistent = bool(config.DATABASE_URL or database.db_pool is not None)
-        if persistent and (database.db_pool is None or not memory_state.AI_MEMORY_READY):
-            raise MemoryUnavailable("Хранилище временно недоступно. Изменение не сохранено.")
+        values = {name: replacement if name == key and replacement else "" for name in keys}
         case = diagnostic_store.CASES.get(case_key)
-        if persistent:
+        if memory_store.uses_local_storage():
+            try:
+                sources, sanitized_case = await feature_storage.run(
+                    lambda connection: _change_local(connection, case_key, action_id, values, records, active, case, now)
+                )
+            except Exception as error:
+                raise MemoryUnavailable("Хранилище временно недоступно. Изменение не сохранено.") from error
+        else:
+            if database.db_pool is None or not memory_state.AI_MEMORY_READY:
+                raise MemoryUnavailable("Хранилище временно недоступно. Изменение не сохранено.")
             try:
                 if not await diagnostic_store._ready():
                     raise MemoryUnavailable("Личная диагностика временно недоступна.")
                 async with asyncio.timeout(8), database.db_pool.connection() as connection:
+                    await connection.execute("SELECT pg_advisory_xact_lock(%s)", (scope[1],))
                     case_cursor = await connection.execute(
                         "SELECT payload FROM elis_private.diagnostic_cases "
                         "WHERE guild_id=%s AND channel_id=%s AND user_id=%s", case_key,
@@ -184,7 +221,7 @@ async def change_personal_facts(scope, uid, action_id, *, key=None, replacement=
                             WHERE guild_id = %s AND channel_id = %s AND message_id = ANY(%s)""",
                             (*scope, list(sources)),
                         )
-                    for name in keys:
+                    for name, text in values.items():
                         await connection.execute(
                             """INSERT INTO elis_private.member_facts
                             (guild_id, channel_id, user_id, fact_key, content, source_message_id, updated_at)
@@ -193,7 +230,7 @@ async def change_personal_facts(scope, uid, action_id, *, key=None, replacement=
                             content = EXCLUDED.content, source_message_id = EXCLUDED.source_message_id,
                             updated_at = EXCLUDED.updated_at
                             WHERE member_facts.source_message_id <= EXCLUDED.source_message_id""",
-                            (*scope, uid, name, replacement if name == key and replacement else "", action_id,
+                            (*scope, uid, name, text, action_id,
                              datetime.fromtimestamp(now, config.MOSCOW_TIMEZONE)),
                         )
                     sanitized_case = _sanitized_case(case, sources, action_id)
@@ -207,16 +244,12 @@ async def change_personal_facts(scope, uid, action_id, *, key=None, replacement=
                         )
             except Exception as error:
                 raise MemoryUnavailable("Хранилище временно недоступно. Изменение не сохранено.") from error
-        else:
-            sources = _source_ids(records, uid, keys, action_id, active)
-            sanitized_case = _sanitized_case(case, sources, action_id)
-        # RAM changes only after the durable transaction succeeds (or explicit RAM-only mode).
+        # Update the live caches only after the storage transaction commits.
         _purge_sources(scope, uid, sources)
         if sanitized_case is not None:
             diagnostic_store.cache_case(case_key, sanitized_case)
-        for name in keys:
-            entry = {"text": replacement if name == key and replacement else "",
-                     "source": action_id, "timestamp": now}
+        for name, text in values.items():
+            entry = {"text": text, "source": action_id, "timestamp": now}
             personal[name] = entry
             merge_control_fact(scope, uid, name, entry)
             for pending_scope, record, pending_facts in memory_state.AI_MEMORY_PENDING.values():

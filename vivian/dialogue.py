@@ -3,9 +3,6 @@ import re
 from vivian import followups as vivian_followups
 
 
-IOS_VERSION_PATTERN = re.compile(r"\b(?:ios|айос)\b", re.IGNORECASE)
-
-
 CURRENT_TIME_PATTERN = re.compile(
     r"\b(?:сколько\s+(?:сейчас\s+)?времени|который\s+час|текущее\s+время)\b",
     re.IGNORECASE,

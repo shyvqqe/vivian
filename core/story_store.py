@@ -15,28 +15,28 @@ def _ids(*values):
 
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS story_settings (
-        guild_id INTEGER PRIMARY KEY,
-        channel_id INTEGER NOT NULL
+        guild_id BIGINT PRIMARY KEY,
+        channel_id BIGINT NOT NULL
     )""")
     connection.execute("""CREATE TABLE IF NOT EXISTS stories (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id INTEGER NOT NULL,
-        channel_id INTEGER NOT NULL,
-        author_id INTEGER NOT NULL,
-        message_id INTEGER,
+        guild_id BIGINT NOT NULL,
+        channel_id BIGINT NOT NULL,
+        author_id BIGINT NOT NULL,
+        message_id BIGINT,
         text TEXT,
         image_url TEXT,
-        created_at REAL NOT NULL,
-        expires_at REAL NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
+        expires_at DOUBLE PRECISION NOT NULL,
         deleted INTEGER NOT NULL DEFAULT 0
     )""")
     connection.execute(
         "CREATE INDEX IF NOT EXISTS stories_expiry ON stories(expires_at, deleted)"
     )
     connection.execute("""CREATE TABLE IF NOT EXISTS story_views (
-        story_id INTEGER NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-        user_id INTEGER NOT NULL,
-        viewed_at REAL NOT NULL,
+        story_id BIGINT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+        user_id BIGINT NOT NULL,
+        viewed_at DOUBLE PRECISION NOT NULL,
         PRIMARY KEY (story_id, user_id)
     )""")
 
@@ -79,10 +79,10 @@ async def create_story(guild_id: int, channel_id: int, author_id: int, text: str
         _schema(connection)
         cursor = connection.execute(
             "INSERT INTO stories (guild_id, channel_id, author_id, text, image_url, created_at, expires_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (guild_id, channel_id, author_id, text, image_url, now, now + STORY_DURATION_SECONDS),
         )
-        return {"id": cursor.lastrowid, "expires_at": now + STORY_DURATION_SECONDS}
+        return {"id": cursor.fetchone()["id"], "expires_at": now + STORY_DURATION_SECONDS}
 
     return await feature_storage.run(work)
 

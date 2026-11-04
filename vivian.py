@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import asyncio
+import sys
 import traceback
 
 import discord
@@ -131,7 +132,28 @@ async def setup_hook():
     try:
         await database._open_persistent_storage()
     except Exception as error:
-        print(f"[Storage] Failed to connect: {type(error).__name__}: {error}", flush=True)
+        if config.DATABASE_URL:
+            raise RuntimeError(
+                f"PostgreSQL initialization failed ({type(error).__name__}). "
+                "Check DATABASE_URL, network access and database permissions."
+            ) from None
+        if isinstance(error, RuntimeError):
+            raise
+        raise RuntimeError(
+            f"SQLite initialization failed ({type(error).__name__}). "
+            "Check VIVIAN_DATA_DIR and write permissions."
+        ) from None
+
+    try:
+        from core import ai_models, ai_preferences
+        await ai_preferences.load_preferences()
+        default_model = ai_models.get_default_model()
+        if ai_models.has_provider(default_model):
+            print(f"[AI] Automatic model configured: {default_model}.", flush=True)
+        else:
+            print("[AI] No provider configured. Set GROQ_API_KEY, GEMINI_API_KEY or OPENROUTER_API_KEY.", flush=True)
+    except Exception as error:
+        print(f"[AI] Startup check failed ({type(error).__name__}).", flush=True)
 
     try:
         synced = await bot.tree.sync()
@@ -160,6 +182,7 @@ async def on_ready():
         (commands.get("wall"), "register_views"),
         (commands.get("status"), "register_views"),
         (commands.get("story"), "register_views"),
+        (commands.get("story"), "start"),
         (commands.get("memories"), "start"),
         (commands.get("birthday"), "start"),
     ):
@@ -195,9 +218,22 @@ async def on_ready():
     print("[Vivian] Ready", flush=True)
 
 
+async def _run_on_windows():
+    async with bot:
+        await bot.start(config.TOKEN)
+
+
 if __name__ == "__main__":
     if not config.TOKEN:
         raise SystemExit("DISCORD_TOKEN is required.")
     if server and hasattr(server, "keep_alive"):
         server.keep_alive()
-    bot.run(config.TOKEN)
+    if sys.platform == "win32" and config.DATABASE_URL:
+        # Psycopg async connections require a selector loop on Windows.
+        discord.utils.setup_logging()
+        try:
+            asyncio.run(_run_on_windows(), loop_factory=asyncio.SelectorEventLoop)
+        except KeyboardInterrupt:
+            pass
+    else:
+        bot.run(config.TOKEN)

@@ -13,7 +13,7 @@ BATCH_SIZE = 20
 STORE_LOCK = asyncio.Lock()
 SCHEMA_SQL = (
     "CREATE SCHEMA IF NOT EXISTS elis_private",
-    "REVOKE ALL ON SCHEMA elis_private FROM PUBLIC, anon, authenticated",
+    "REVOKE ALL ON SCHEMA elis_private FROM PUBLIC",
     """CREATE TABLE IF NOT EXISTS elis_private.chat_impact_totals (
         guild_id BIGINT NOT NULL, user_id BIGINT NOT NULL,
         sparks BIGINT NOT NULL DEFAULT 0, newcomer_replies BIGINT NOT NULL DEFAULT 0,
@@ -33,7 +33,16 @@ SCHEMA_SQL = (
     "ALTER TABLE elis_private.chat_impact_windows ENABLE ROW LEVEL SECURITY",
     """REVOKE ALL ON elis_private.chat_impact_totals,
         elis_private.chat_impact_events, elis_private.chat_impact_windows
-        FROM PUBLIC, anon, authenticated""",
+        FROM PUBLIC""",
+    """DO $vivian_impact$ DECLARE api_role TEXT; BEGIN
+        FOREACH api_role IN ARRAY ARRAY['anon','authenticated'] LOOP
+            IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = api_role) THEN
+                EXECUTE format('REVOKE ALL ON SCHEMA elis_private FROM %I', api_role);
+                EXECUTE format('REVOKE ALL ON elis_private.chat_impact_totals,
+                    elis_private.chat_impact_events, elis_private.chat_impact_windows FROM %I', api_role);
+            END IF;
+        END LOOP;
+    END $vivian_impact$""",
 )
 EVENT_SQL = """WITH inserted AS (
     INSERT INTO elis_private.chat_impact_events (guild_id, kind, actor_id, target_id, occurred_at)

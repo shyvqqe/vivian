@@ -7,7 +7,7 @@ services:
     branch: main
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /
+    healthCheckPath: /healthz
     envVars:
       - key: DISCORD_TOKEN
         sync: false

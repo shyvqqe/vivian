@@ -168,6 +168,9 @@ def create_completion(*, model, messages, **options):
         raise GeminiUnavailable(
             "Gemini request failed; reason=TIMEOUT",
             public_message="Gemini слишком долго отвечает. Попробуй ещё раз чуть позже.",
+            retryable=True,
         ) from None
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
+    except httpx.HTTPError:
+        raise GeminiUnavailable("Gemini request failed; reason=NETWORK", retryable=True) from None
+    except (ValueError, TypeError, AttributeError, KeyError):
         raise GeminiUnavailable("Не удалось получить ответ Gemini.") from None

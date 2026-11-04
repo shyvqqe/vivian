@@ -83,7 +83,14 @@ async def _send_message_once(
     if embed is not None:
         payload["embeds"] = [embed.to_dict()]
     if reference is not None:
-        payload["message_reference"] = {"message_id": str(reference.id)}
+        guild = getattr(channel, "guild", None)
+        member = getattr(guild, "me", None)
+        # Discord requires Read Message History for a referenced reply, even
+        # when sending an ordinary message in this channel is allowed.
+        if guild is None or (member is not None and channel.permissions_for(member).read_message_history):
+            payload["message_reference"] = {
+                "type": 0, "message_id": str(reference.id), "fail_if_not_exists": False,
+            }
     if view is not None:
         payload["components"] = view.to_components()
     sent = await core_config.bot.http.request(route, json=payload)
@@ -110,7 +117,7 @@ async def _reply_once(message, content: str):
 
 def _vivian_reply_reference(message):
     reference = getattr(message, "reference", None)
-    resolved = getattr(reference, "resolved", None)
+    resolved = getattr(reference, "resolved", None) or getattr(reference, "cached_message", None)
     author = getattr(resolved, "author", None)
     if core_config.bot.user is not None and getattr(author, "id", None) == core_config.bot.user.id:
         return resolved

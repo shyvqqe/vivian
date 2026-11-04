@@ -35,18 +35,20 @@ CHAT_STYLE_VERSION = "vivian-chat-v1"
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
 OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
-GEMINI_MODEL = (os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip().removeprefix("models/")
-                or "gemini-3.8-flash")
+_gemini_override = (os.getenv("GEMINI_MODEL") or "").strip().removeprefix("models/")
+GEMINI_MODEL = _gemini_override if re.fullmatch(r"gemini-[a-zA-Z0-9.-]{1,180}", _gemini_override) else "gemini-3.8-flash"
+if _gemini_override and GEMINI_MODEL != _gemini_override:
+    print("[AI Provider] Invalid GEMINI_MODEL; using gemini-3.8-flash.", flush=True)
 BOT_NAME = "Vivian"
 
 
-GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+GROQ_MODEL = (os.getenv("GROQ_MODEL") or "").strip() or "openai/gpt-oss-20b"
 
 
-GROQ_VISION_MODEL = os.getenv("GROQ_VISION_MODEL", "qwen/qwen3.8-27b")
+GROQ_VISION_MODEL = (os.getenv("GROQ_VISION_MODEL") or "").strip() or "qwen/qwen3.8-27b"
 
 
-DATABASE_URL = os.getenv("DATABASE_URL")
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
 
 
 AUTOROLE_ID = 1549170760948645939
@@ -112,6 +114,9 @@ AI_ABUSE_CANDIDATE_PATTERN = re.compile(
 intents = discord.Intents.default()
 
 
+intents.dm_messages = True
+
+
 intents.message_content = True
 
 
@@ -132,6 +137,14 @@ class VivianBot(discord_commands.Bot):
     async def setup_hook(self):
         from core import debug
         await debug.load_debug_extension(self)
+
+    async def close(self):
+        from core import database
+
+        try:
+            await super().close()
+        finally:
+            await database.close()
 
 
 bot = VivianBot(command_prefix=command_prefix, intents=intents)

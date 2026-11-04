@@ -1,10 +1,14 @@
 from __future__ import annotations
+import asyncio
 from datetime import datetime
 from collections import deque
 import hashlib
 import json
 import re
 import time
+
+import discord
+
 from core import config as core_config
 from core import state as core_state
 from vivian import ambient_state as vivian_ambient_state
@@ -12,6 +16,25 @@ from vivian import dialogue as vivian_dialogue
 from vivian import memory_state as vivian_memory_state
 from vivian import memory_store as vivian_memory_store
 from vivian import memory_controls_store as controls_store
+from vivian import reply_style
+
+
+_DM_HISTORY_LIMIT = 24
+_DM_HISTORY_SECONDS = 2 * 60 * 60
+_DM_HISTORY_TIMEOUT = 1.5
+_DM_NOTICE = re.compile(
+    r"^(?:ИИ (?:пока |сейчас )?недоступен|AI-канал не настроен|"
+    r"Не получилось (?:получить|сформулировать) ответ|У меня сейчас сбой|"
+    r"Модель (?:слишком долго отвечает|не вернула текст ответа)|"
+    r"Личная память доступна на сервере|Для выбранной модели|"
+    r"Для (?:Gemini|Groq|OpenRouter) нужен ключ API|"
+    r"(?:Gemini|Groq|OpenRouter) (?:отклонил|ограничила|требует|запретила|"
+    r"не приняла|не смог|слишком долго|временно недоступен|сейчас (?:недоступна|не смогла))|"
+    r"У (?:Gemini|Groq|OpenRouter) сработал лимит|"
+    r"Эта модель (?:Gemini|Groq|OpenRouter) |"
+    r"[^\n]{1,80}: достигнут лимит\.)",
+    re.IGNORECASE,
+)
 
 
 def _ai_memory_scope(message, require_history: bool = False):
@@ -37,13 +60,9 @@ def _ai_memory_touch(scope) -> None:
         vivian_memory_state.AI_MEMORY_CHANNELS.pop(victim, None)
         vivian_memory_state.AI_MEMORY_FACTS.pop(victim, None)
         vivian_memory_state.AI_MEMORY_LOADED.discard(victim)
-        vivian_memory_state.AI_MEMORY_CLEANED_AT.pop(victim, None)
         vivian_memory_state.AI_MEMORY_LOAD_RETRY.pop(victim, None)
-        vivian_memory_state.AI_MEMORY_LOAD_LOCKS.pop(victim, None)
         for key in [key for key in core_state.chat_history if key[:2] == victim]:
             core_state.chat_history.pop(key, None)
-            if key in core_state.AI_DIALOGUE_LOCKS and not core_state.AI_DIALOGUE_LOCKS[key].locked():
-                core_state.AI_DIALOGUE_LOCKS.pop(key, None)
 
 
 def _ai_memory_cache_record(scope, record: dict) -> None:
@@ -154,18 +173,75 @@ def _ai_memory_prompt_record(item: dict, text_limit: int, *, include_source: boo
     return record
 
 
+async def _restore_dm_history(message, cutoff: float) -> list[dict]:
+    channel = message.channel
+    bot_id = getattr(core_config.bot.user, "id", None)
+    user_id = message.author.id
+    recipient = getattr(channel, "recipient", None)
+    if (bot_id is None or channel.type != discord.ChannelType.private
+            or recipient is not None and recipient.id != user_id):
+        return []
+
+    history = []
+    try:
+        async with asyncio.timeout(_DM_HISTORY_TIMEOUT):
+            async for previous in channel.history(limit=_DM_HISTORY_LIMIT, before=message):
+                if (previous.channel.id != channel.id or previous.id >= message.id
+                        or previous.type not in (discord.MessageType.default, discord.MessageType.reply)
+                        or getattr(previous, "interaction_metadata", None) is not None):
+                    continue
+                timestamp = previous.created_at.timestamp()
+                if timestamp < cutoff:
+                    continue
+                if previous.author.id == bot_id:
+                    role = "assistant"
+                    text = reply_style.extract_reply_text(previous, bot_id).strip()
+                    if _DM_NOTICE.match(text):
+                        continue
+                elif previous.author.id == user_id:
+                    role = "user"
+                    text = (previous.content or "").strip()
+                    prefix = core_config.command_prefix(core_config.bot, previous)
+                    prefixes = (prefix,) if isinstance(prefix, str) else tuple(prefix)
+                    if text.startswith(("/", *prefixes)):
+                        continue
+                    text = text.replace(f"<@{bot_id}>", "Vivian").replace(f"<@!{bot_id}>", "Vivian")
+                else:
+                    continue
+                if not text or vivian_memory_state.AI_MEMORY_SECRET_PATTERN.search(text):
+                    continue
+                content = text[:1800]
+                if role == "user":
+                    content = f"Собеседник: {previous.author.display_name}\nСообщение: {content}"
+                history.append({"role": role, "content": content, "_timestamp": timestamp,
+                                "_message_id": previous.id})
+    except Exception as error:
+        print(f"[AI Memory] DM history unavailable; error={type(error).__name__}", flush=True)
+    return sorted(history, key=lambda turn: (turn["_timestamp"], turn["_message_id"]))
+
+
 async def _ai_memory_prepare(message):
-    scope = _ai_memory_scope(message, require_history=True)
     key = (message.guild.id if message.guild else 0, message.channel.id, message.author.id)
-    history = core_state.chat_history.setdefault(key, [])
     if message.guild is None:
+        _ai_memory_touch(key[:2])
+        cutoff = time.time() - _DM_HISTORY_SECONDS
+        history = core_state.chat_history.setdefault(key, [])
+        history[:] = [
+            turn for turn in history
+            if turn["_timestamp"] >= cutoff and turn["_message_id"] < message.id
+            and not vivian_memory_state.AI_MEMORY_SECRET_PATTERN.search(turn["content"])
+        ]
+        if not history:
+            history.extend(await _restore_dm_history(message, cutoff))
         return history, ""
+    scope = _ai_memory_scope(message, require_history=True)
     if scope is None:
         # A member without history access must not receive an old channel archive.
         return [], ""
+    history = core_state.chat_history.setdefault(key, [])
     await vivian_memory_store._ai_memory_load(scope)
     tokens = _ai_memory_tokens(message.content or "")
-    stored = await vivian_memory_store._ai_memory_read_turn(scope, message.author.id, message.id, tokens)
+    stored = await vivian_memory_store._ai_memory_read_turn(scope, message.author.id, message.id)
     purged = controls_store.PURGED_SOURCE_IDS.get(scope, set())
     records_by_id = {item["message_id"]: item for item in stored if item["message_id"] not in purged}
     records_by_id.update({item["message_id"]: item for item in vivian_memory_state.AI_MEMORY_CHANNELS.get(scope, ())})
@@ -181,7 +257,8 @@ async def _ai_memory_prepare(message):
              and time.time() - item["timestamp"] < vivian_memory_state.AI_MEMORY_FACT_DAYS * 86400]
     current_id = message.id
     # Only past messages from this exact channel; a newer concurrent turn is not the current user's context.
-    past = [item for item in records if item["message_id"] < current_id]
+    past = [item for item in records if item["message_id"] < current_id
+            and item["audience_id"] in (0, message.author.id)]
     recent = past[-20:]
     recent_ids = {item["message_id"] for item in recent}
     ranked = sorted(((len(tokens & _ai_memory_tokens(item["text"])), item)
@@ -292,7 +369,8 @@ async def _ai_memory_ambient_excerpt(message, live_context: list[dict]) -> list[
     tokens = _ai_memory_tokens(" ".join(item["text"] for item in live_context[-5:]))
     first_id = min(item["message_id"] for item in live_context)
     candidates = [item for item in vivian_memory_state.AI_MEMORY_CHANNELS.get(scope, ())
-                  if item["message_id"] < first_id and tokens & _ai_memory_tokens(item["text"])
+                  if item["audience_id"] == 0 and item["message_id"] < first_id
+                  and tokens & _ai_memory_tokens(item["text"])
                   and not vivian_ambient_state.AMBIENT_SENSITIVE_PATTERN.search(item["text"])]
     ranked = sorted(candidates, key=lambda item: (
         len(tokens & _ai_memory_tokens(item["text"])), item["timestamp"]), reverse=True)[:6]

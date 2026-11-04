@@ -37,13 +37,13 @@ def normalize_tags(value: str) -> list[str]:
 
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS exchange_profiles (
-        guild_id INTEGER NOT NULL,
-        channel_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL,
+        channel_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL,
         offers TEXT NOT NULL,
         wants TEXT NOT NULL,
         active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0,1)),
-        updated_at INTEGER NOT NULL,
+        updated_at BIGINT NOT NULL,
         PRIMARY KEY (guild_id, channel_id, user_id)
     )""")
 

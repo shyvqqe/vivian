@@ -6,7 +6,7 @@ import time
 
 import discord
 
-from core import config, database
+from core import config
 from vivian import memory_state, memory_store
 from utils import components_v2 as v2
 
@@ -73,7 +73,9 @@ def fact_card(view, interaction, notice=None):
         mark = " · выбран" if key == view.selected_key else ""
         embed.add_field(name=f"{index:02d}{mark} · {date:%d.%m.%Y}", value=text[:300], inline=False)
         plain.append(f"{index:02d}. {text}")
-    mode = "Supabase" if database.db_pool is not None and memory_state.AI_MEMORY_READY else "RAM"
+    mode = "Хранилище недоступно"
+    if memory_state.AI_MEMORY_READY:
+        mode = "SQLite" if memory_store.uses_local_storage() else "PostgreSQL"
     embed.set_footer(text=f"{total} фактов · страница {view.page + 1}/{max(1, (total + 4) // 5)} · {mode} // VIVIAN")
     if not interaction.channel.permissions_for(interaction.guild.me).embed_links:
         return "\n\n".join(plain)[:1900], None

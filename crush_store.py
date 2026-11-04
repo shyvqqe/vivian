@@ -16,10 +16,10 @@ def _ids(*values):
 
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS crushes (
-        guild_id INTEGER NOT NULL,
-        from_id INTEGER NOT NULL,
-        to_id INTEGER NOT NULL,
-        created_at REAL NOT NULL,
+        guild_id BIGINT NOT NULL,
+        from_id BIGINT NOT NULL,
+        to_id BIGINT NOT NULL,
+        created_at DOUBLE PRECISION NOT NULL,
         notified INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (guild_id, from_id, to_id)
     )""")

@@ -23,34 +23,34 @@ def _text(value):
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS wall_posts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id INTEGER NOT NULL,
-        owner_id INTEGER NOT NULL,
-        author_id INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL,
+        owner_id BIGINT NOT NULL,
+        author_id BIGINT NOT NULL,
         text TEXT NOT NULL,
-        message_id INTEGER,
-        channel_id INTEGER,
-        thread_id INTEGER,
-        created_at REAL NOT NULL,
+        message_id BIGINT,
+        channel_id BIGINT,
+        thread_id BIGINT,
+        created_at DOUBLE PRECISION NOT NULL,
         deleted INTEGER NOT NULL DEFAULT 0
     )""")
     connection.execute(
         "CREATE INDEX IF NOT EXISTS wall_posts_owner ON wall_posts(guild_id, owner_id, deleted, created_at DESC)"
     )
     connection.execute("""CREATE TABLE IF NOT EXISTS wall_likes (
-        post_id INTEGER NOT NULL REFERENCES wall_posts(id) ON DELETE CASCADE,
-        user_id INTEGER NOT NULL,
+        post_id BIGINT NOT NULL REFERENCES wall_posts(id) ON DELETE CASCADE,
+        user_id BIGINT NOT NULL,
         PRIMARY KEY (post_id, user_id)
     )""")
     connection.execute("""CREATE TABLE IF NOT EXISTS wall_comments (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        post_id INTEGER NOT NULL REFERENCES wall_posts(id) ON DELETE CASCADE,
-        author_id INTEGER NOT NULL,
+        post_id BIGINT NOT NULL REFERENCES wall_posts(id) ON DELETE CASCADE,
+        author_id BIGINT NOT NULL,
         text TEXT NOT NULL,
-        created_at REAL NOT NULL
+        created_at DOUBLE PRECISION NOT NULL
     )""")
     connection.execute("""CREATE TABLE IF NOT EXISTS wall_privacy (
-        guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL,
         privacy TEXT NOT NULL DEFAULT 'all' CHECK (privacy IN ('all', 'friends', 'none')),
         PRIMARY KEY (guild_id, user_id)
     )""")
@@ -96,10 +96,11 @@ async def create_post(guild_id: int, owner_id: int, author_id: int, text: str) -
     def work(connection):
         _schema(connection)
         cursor = connection.execute(
-            "INSERT INTO wall_posts (guild_id, owner_id, author_id, text, created_at) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO wall_posts (guild_id, owner_id, author_id, text, created_at) "
+            "VALUES (?, ?, ?, ?, ?) RETURNING id",
             (guild_id, owner_id, author_id, text, time.time()),
         )
-        return {"id": cursor.lastrowid}
+        return {"id": cursor.fetchone()["id"]}
 
     return await feature_storage.run(work)
 
@@ -178,10 +179,10 @@ async def add_comment(post_id: int, author_id: int, text: str) -> int:
     def work(connection):
         _schema(connection)
         cursor = connection.execute(
-            "INSERT INTO wall_comments (post_id, author_id, text, created_at) VALUES (?, ?, ?, ?)",
+            "INSERT INTO wall_comments (post_id, author_id, text, created_at) VALUES (?, ?, ?, ?) RETURNING id",
             (post_id, author_id, text, time.time()),
         )
-        return cursor.lastrowid
+        return cursor.fetchone()["id"]
 
     return await feature_storage.run(work)
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections import deque
 import time
+from weakref import WeakValueDictionary
 
 
 warns = {}
@@ -51,4 +52,4 @@ chat_history = {}
 MAX_HISTORY = 120
 
 
-AI_DIALOGUE_LOCKS = {}
+AI_DIALOGUE_LOCKS = WeakValueDictionary()

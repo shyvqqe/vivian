@@ -32,13 +32,7 @@ AI_MEMORY_FACTS = {}
 AI_MEMORY_LOADED = set()
 
 
-AI_MEMORY_LOAD_LOCKS = {}
-
-
 AI_MEMORY_LAST_USED = {}
-
-
-AI_MEMORY_CLEANED_AT = {}
 
 
 AI_MEMORY_READY = False
@@ -96,14 +90,14 @@ AI_MEMORY_SCHEMA_SQL = (
     "CREATE INDEX IF NOT EXISTS member_facts_expiry_idx ON elis_private.member_facts (updated_at)",
     "ALTER TABLE elis_private.chat_messages ENABLE ROW LEVEL SECURITY",
     "ALTER TABLE elis_private.member_facts ENABLE ROW LEVEL SECURITY",
-    "REVOKE ALL ON ALL TABLES IN SCHEMA elis_private FROM PUBLIC",
+    "REVOKE ALL ON elis_private.chat_messages, elis_private.member_facts FROM PUBLIC",
     """DO $vivian_memory$
     DECLARE api_role TEXT;
     BEGIN
         FOREACH api_role IN ARRAY ARRAY['anon', 'authenticated'] LOOP
             IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = api_role) THEN
                 EXECUTE format('REVOKE ALL ON SCHEMA elis_private FROM %I', api_role);
-                EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA elis_private FROM %I', api_role);
+                EXECUTE format('REVOKE ALL ON elis_private.chat_messages, elis_private.member_facts FROM %I', api_role);
             END IF;
         END LOOP;
     END $vivian_memory$""",

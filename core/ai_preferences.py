@@ -1,15 +1,17 @@
-"""Personal model choices stored privately through the existing Postgres pool."""
+"""Persist and restore personal model choices."""
 from __future__ import annotations
 
 import asyncio
+import time
 from weakref import WeakValueDictionary
 
-from core import database
+from core import config, database, feature_storage
 
 _ready_pool = None
 _loaded_pool = None
 _schema_lock = None
 _selection_locks = WeakValueDictionary()
+_LOCAL = object()
 
 
 def selection_lock(guild_id, user_id):
@@ -44,6 +46,13 @@ SCHEMA_SQL = (
 )
 
 
+def _local_schema(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS ai_preferences (
+        guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, model_id TEXT NOT NULL,
+        updated_at REAL NOT NULL, PRIMARY KEY (guild_id, user_id)
+    )""")
+
+
 async def _ready():
     global _ready_pool, _schema_lock
     pool = database.db_pool
@@ -71,10 +80,26 @@ async def save_preference(guild_id, user_id, model_id):
     from core import ai_models
     if model_id is not None and model_id not in ai_models.MODELS:
         return False
-    pool = await _ready()
-    if pool is None:
-        return False
     try:
+        if not config.DATABASE_URL and database.db_pool is None:
+            def work(connection):
+                _local_schema(connection)
+                if model_id is None:
+                    connection.execute(
+                        "DELETE FROM ai_preferences WHERE guild_id = ? AND user_id = ?", (guild_id, user_id),
+                    )
+                else:
+                    connection.execute(
+                        """INSERT INTO ai_preferences (guild_id, user_id, model_id, updated_at)
+                        VALUES (?, ?, ?, ?) ON CONFLICT (guild_id, user_id)
+                        DO UPDATE SET model_id = excluded.model_id, updated_at = excluded.updated_at""",
+                        (guild_id, user_id, model_id, time.time()),
+                    )
+            await feature_storage.run(work)
+            return True
+        pool = await _ready()
+        if pool is None:
+            return False
         async with asyncio.timeout(4), pool.connection() as connection:
             if model_id is None:
                 await connection.execute(
@@ -97,20 +122,32 @@ async def save_preference(guild_id, user_id, model_id):
 async def load_preferences():
     global _loaded_pool
     from core import ai_models
-    pool = await _ready()
-    if pool is None or _loaded_pool is pool:
-        return
     try:
-        async with asyncio.timeout(4), pool.connection() as connection:
-            cursor = await connection.execute(
-                "SELECT guild_id, user_id, model_id FROM vivian_private.ai_preferences "
-                "ORDER BY updated_at DESC LIMIT 10000"
-            )
-            rows = await cursor.fetchall()
+        if not config.DATABASE_URL and database.db_pool is None:
+            backend = _LOCAL
+            if _loaded_pool is backend:
+                return
+
+            def work(connection):
+                _local_schema(connection)
+                return connection.execute(
+                    "SELECT guild_id, user_id, model_id FROM ai_preferences ORDER BY updated_at DESC LIMIT 10000",
+                ).fetchall()
+            rows = await feature_storage.run(work)
+        else:
+            backend = await _ready()
+            if backend is None or _loaded_pool is backend:
+                return
+            async with asyncio.timeout(4), backend.connection() as connection:
+                cursor = await connection.execute(
+                    "SELECT guild_id, user_id, model_id FROM vivian_private.ai_preferences "
+                    "ORDER BY updated_at DESC LIMIT 10000"
+                )
+                rows = await cursor.fetchall()
         for guild_id, user_id, model_id in reversed(rows):
             async with selection_lock(guild_id, user_id):
                 if not ai_models.was_changed(guild_id, user_id):
                     ai_models.restore_selection(guild_id, user_id, model_id)
-        _loaded_pool = pool
+        _loaded_pool = backend
     except Exception as error:
         print(f"[AI Preferences] Restore unavailable; error={type(error).__name__}", flush=True)

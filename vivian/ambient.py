@@ -62,9 +62,7 @@ async def _ambient_reply(message, context: list[dict]) -> None:
         )
         if seriousness:
             instructions += "Тон последних сообщений серьёзный: не шути, не смейся и не обесценивай проблему. "
-        options = {"max_completion_tokens": 1024, "timeout": 20.0}
-        if model.lower().startswith("openai/gpt-oss-"):
-            options["reasoning_effort"] = "low"
+        options = {"max_completion_tokens": 1024, "_deadline": time.monotonic() + 20}
         completion = await asyncio.wait_for(
             asyncio.to_thread(
                 lambda: core_ai_models.create_completion(

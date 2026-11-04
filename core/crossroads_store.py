@@ -20,15 +20,15 @@ def _text(value, limit):
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS crossroads (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL,
-        owner_id INTEGER NOT NULL, question TEXT NOT NULL,
+        guild_id BIGINT NOT NULL, channel_id BIGINT NOT NULL,
+        owner_id BIGINT NOT NULL, question TEXT NOT NULL,
         options TEXT NOT NULL, expectation TEXT NOT NULL,
-        created_at REAL NOT NULL, closes_at REAL NOT NULL,
-        review_at REAL NOT NULL, outcome TEXT, canceled INTEGER NOT NULL DEFAULT 0
+        created_at DOUBLE PRECISION NOT NULL, closes_at DOUBLE PRECISION NOT NULL,
+        review_at DOUBLE PRECISION NOT NULL, outcome TEXT, canceled INTEGER NOT NULL DEFAULT 0
     )""")
     connection.execute("""CREATE TABLE IF NOT EXISTS crossroads_votes (
-        decision_id INTEGER NOT NULL REFERENCES crossroads(id) ON DELETE CASCADE,
-        user_id INTEGER NOT NULL, choice INTEGER NOT NULL,
+        decision_id BIGINT NOT NULL REFERENCES crossroads(id) ON DELETE CASCADE,
+        user_id BIGINT NOT NULL, choice INTEGER NOT NULL,
         confidence INTEGER NOT NULL,
         PRIMARY KEY (decision_id, user_id)
     )""")
@@ -80,11 +80,11 @@ async def create(guild_id, channel_id, owner_id, question, options, expectation,
         cursor = connection.execute(
             """INSERT INTO crossroads
             (guild_id, channel_id, owner_id, question, options, expectation, created_at, closes_at, review_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id""",
             (guild_id, channel_id, owner_id, question, json.dumps(options), expectation,
              now, closes, closes + review_hours * 3600),
         )
-        return _get(connection, guild_id, channel_id, cursor.lastrowid)
+        return _get(connection, guild_id, channel_id, cursor.fetchone()["id"])
 
     return await feature_storage.run(operation)
 

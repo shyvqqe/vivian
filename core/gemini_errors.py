@@ -26,9 +26,10 @@ _BLOCK_REASONS = frozenset({
 class GeminiUnavailable(RuntimeError):
     """Only a fixed diagnostic and a fixed, safe Discord notice are retained."""
 
-    def __init__(self, message, *, public_message=None):
+    def __init__(self, message, *, public_message=None, retryable=False):
         super().__init__(message)
         self.public_message = public_message or _DEFAULT_NOTICE
+        self.retryable = retryable
 
 
 def _metadata(response):
@@ -110,6 +111,7 @@ def response_error(response):
     return GeminiUnavailable(
         f"Gemini failure; kind={kind}; http={code}; status={status}; reason={reason}",
         public_message=notice,
+        retryable=kind not in {"invalid_request", "provider_error"},
     )
 
 

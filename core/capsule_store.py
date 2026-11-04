@@ -9,21 +9,21 @@ from core import feature_storage
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS vivian_capsules (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id INTEGER NOT NULL,
-        channel_id INTEGER NOT NULL,
-        owner_id INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL,
+        channel_id BIGINT NOT NULL,
+        owner_id BIGINT NOT NULL,
         title TEXT NOT NULL,
-        opens_at INTEGER NOT NULL,
+        opens_at BIGINT NOT NULL,
         quorum INTEGER NOT NULL,
-        created_at INTEGER NOT NULL,
-        revealed_at INTEGER,
-        cancelled_at INTEGER
+        created_at BIGINT NOT NULL,
+        revealed_at BIGINT,
+        cancelled_at BIGINT
     )""")
     connection.execute("""CREATE TABLE IF NOT EXISTS vivian_capsule_notes (
-        capsule_id INTEGER NOT NULL REFERENCES vivian_capsules(id) ON DELETE CASCADE,
-        user_id INTEGER NOT NULL,
+        capsule_id BIGINT NOT NULL REFERENCES vivian_capsules(id) ON DELETE CASCADE,
+        user_id BIGINT NOT NULL,
         note TEXT NOT NULL,
-        updated_at INTEGER NOT NULL,
+        updated_at BIGINT NOT NULL,
         PRIMARY KEY (capsule_id, user_id)
     )""")
     connection.execute("""CREATE INDEX IF NOT EXISTS vivian_capsules_channel
@@ -86,10 +86,10 @@ async def create(guild_id, channel_id, owner_id, title, minutes, quorum, *, now=
             raise ValueError("This channel already has 20 sealed capsules. Open or cancel one first.")
         cursor = connection.execute(
             "INSERT INTO vivian_capsules (guild_id, channel_id, owner_id, title, opens_at, quorum, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id",
             (guild_id, channel_id, owner_id, title, timestamp + minutes * 60, quorum, timestamp),
         )
-        return _summary(connection, _get(connection, guild_id, channel_id, cursor.lastrowid))
+        return _summary(connection, _get(connection, guild_id, channel_id, cursor.fetchone()["id"]))
 
     return await feature_storage.run(operation)
 

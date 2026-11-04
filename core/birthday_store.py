@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from core import feature_storage
 
 
@@ -11,18 +13,18 @@ def _ids(*values):
 
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS birthdays (
-        guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL,
         day INTEGER NOT NULL CHECK (day BETWEEN 1 AND 31),
         month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
         year INTEGER,
         PRIMARY KEY (guild_id, user_id)
     )""")
     connection.execute("""CREATE TABLE IF NOT EXISTS birthday_active_roles (
-        guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        role_id INTEGER NOT NULL,
-        expires_at REAL NOT NULL,
+        guild_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL,
+        role_id BIGINT NOT NULL,
+        expires_at DOUBLE PRECISION NOT NULL,
         PRIMARY KEY (guild_id, user_id)
     )""")
     connection.execute(
@@ -78,8 +80,10 @@ async def for_month_day(guild_id: int, month: int, day: int) -> list[int]:
 
 
 async def upcoming(guild_id: int, limit: int = 10) -> list[dict]:
-    """Ordered by closeness; SQLite handles the day-of-year wraparound in plain SQL."""
+    """Order birthdays from today through the same date next year."""
     guild_id, = _ids(guild_id)
+    now = datetime.now(timezone.utc)
+    today = now.month * 100 + now.day
 
     def work(connection):
         _schema(connection)
@@ -87,13 +91,12 @@ async def upcoming(guild_id: int, limit: int = 10) -> list[dict]:
             """
             SELECT user_id, day, month, year,
                 (CASE
-                    WHEN (month * 100 + day) >= CAST(strftime('%m%d', 'now') AS INTEGER)
-                    THEN (month * 100 + day) - CAST(strftime('%m%d', 'now') AS INTEGER)
-                    ELSE (month * 100 + day) - CAST(strftime('%m%d', 'now') AS INTEGER) + 1231
+                    WHEN (month * 100 + day) >= ? THEN (month * 100 + day) - ?
+                    ELSE (month * 100 + day) - ? + 1231
                 END) AS distance
             FROM birthdays WHERE guild_id = ? ORDER BY distance ASC LIMIT ?
             """,
-            (guild_id, limit),
+            (today, today, today, guild_id, limit),
         ).fetchall()
         return [dict(row) for row in rows]
 

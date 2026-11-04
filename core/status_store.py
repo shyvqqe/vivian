@@ -15,20 +15,20 @@ def _ids(*values):
 
 def _schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS relationships (
-        guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
-        partner_id INTEGER NOT NULL,
-        since REAL NOT NULL,
+        guild_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL,
+        partner_id BIGINT NOT NULL,
+        since DOUBLE PRECISION NOT NULL,
         PRIMARY KEY (guild_id, user_id)
     )""")
     connection.execute("""CREATE TABLE IF NOT EXISTS relationship_requests (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        guild_id INTEGER NOT NULL,
-        from_id INTEGER NOT NULL,
-        to_id INTEGER NOT NULL,
-        message_id INTEGER,
+        guild_id BIGINT NOT NULL,
+        from_id BIGINT NOT NULL,
+        to_id BIGINT NOT NULL,
+        message_id BIGINT,
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','declined','canceled')),
-        created_at REAL NOT NULL
+        created_at DOUBLE PRECISION NOT NULL
     )""")
     connection.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS relationship_requests_pending "
@@ -38,11 +38,11 @@ def _schema(connection):
         "CREATE INDEX IF NOT EXISTS relationship_requests_message ON relationship_requests(message_id)"
     )
     connection.execute("""CREATE TABLE IF NOT EXISTS status_profiles (
-        guild_id INTEGER NOT NULL,
-        user_id INTEGER NOT NULL,
+        guild_id BIGINT NOT NULL,
+        user_id BIGINT NOT NULL,
         text TEXT,
         mood TEXT,
-        updated_at REAL NOT NULL,
+        updated_at DOUBLE PRECISION NOT NULL,
         PRIMARY KEY (guild_id, user_id)
     )""")
 
@@ -73,10 +73,10 @@ async def propose(guild_id: int, from_id: int, to_id: int) -> int:
             raise ValueError("Предложение уже отправлено и ожидает ответа.")
         cursor = connection.execute(
             "INSERT INTO relationship_requests (guild_id, from_id, to_id, status, created_at) "
-            "VALUES (?, ?, ?, 'pending', ?)",
+            "VALUES (?, ?, ?, 'pending', ?) RETURNING id",
             (guild_id, from_id, to_id, time.time()),
         )
-        return cursor.lastrowid
+        return cursor.fetchone()["id"]
 
     return await feature_storage.run(work)
 
@@ -114,7 +114,7 @@ async def resolve_by_message(guild_id: int, message_id: int, responder_id: int, 
             connection.execute(
                 "UPDATE relationship_requests SET status = 'declined' WHERE id = ?", (item["id"],)
             )
-            raise ValueError("Один из вас уже успел завести отношения с кем-то другим.")
+            return None
         connection.execute(
             "UPDATE relationship_requests SET status = ? WHERE id = ?",
             ("accepted" if accept else "declined", item["id"]),
@@ -130,7 +130,10 @@ async def resolve_by_message(guild_id: int, message_id: int, responder_id: int, 
             )
         return {"from_id": item["from_id"], "to_id": item["to_id"]}
 
-    return await feature_storage.run(work)
+    result = await feature_storage.run(work)
+    if result is None:
+        raise ValueError("Один из вас уже успел завести отношения с кем-то другим.")
+    return result
 
 
 async def single(guild_id: int, user_id: int) -> int | None:

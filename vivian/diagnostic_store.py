@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import time
 from collections import OrderedDict
 
 from psycopg.types.json import Jsonb
 
-from core import database
+from core import database, feature_storage
+from vivian.memory_store import uses_local_storage
 
 CASES = OrderedDict()
 LOCKS = {}
@@ -58,6 +60,35 @@ def cache_case(key, case):
         CASES.popitem(last=False)
 
 
+def _local_schema(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS ai_diagnostic_cases (
+        guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
+        payload TEXT NOT NULL, revision INTEGER NOT NULL, updated_at REAL NOT NULL,
+        PRIMARY KEY (guild_id, channel_id, user_id)
+    )""")
+
+
+def read_local_case(connection, key):
+    _local_schema(connection)
+    row = connection.execute(
+        "SELECT payload FROM ai_diagnostic_cases WHERE guild_id = ? AND channel_id = ? "
+        "AND user_id = ? AND updated_at >= ?", (*key, time.time() - RETENTION_SECONDS),
+    ).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def write_local_case(connection, key, case):
+    _local_schema(connection)
+    connection.execute(
+        """INSERT INTO ai_diagnostic_cases (guild_id, channel_id, user_id, payload, revision, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (guild_id, channel_id, user_id) DO UPDATE SET
+        payload = excluded.payload, revision = excluded.revision, updated_at = excluded.updated_at
+        WHERE ai_diagnostic_cases.revision <= excluded.revision""",
+        (*key, json.dumps(case, ensure_ascii=False), int(case["revision"]), time.time()),
+    )
+    connection.execute("DELETE FROM ai_diagnostic_cases WHERE updated_at < ?", (time.time() - RETENTION_SECONDS,))
+
+
 async def _ready():
     global READY_POOL, SCHEMA_LOCK
     pool = database.db_pool
@@ -91,6 +122,15 @@ async def load_case(key):
             CASES.move_to_end(key)
             return copy.deepcopy(case)
         CASES.pop(key, None)
+    if uses_local_storage():
+        try:
+            case = await feature_storage.run(lambda connection: read_local_case(connection, key))
+            if case is not None:
+                cache_case(key, case)
+            return case
+        except Exception as error:
+            print(f"[Diagnosis] Read failed: {type(error).__name__}", flush=True)
+            return None
     if not await _ready():
         return None
     try:
@@ -110,6 +150,13 @@ async def load_case(key):
 
 async def save_case(key, case):
     cache_case(key, case)
+    if uses_local_storage():
+        try:
+            await feature_storage.run(lambda connection: write_local_case(connection, key, case))
+            return True
+        except Exception as error:
+            print(f"[Diagnosis] Save failed: {type(error).__name__}", flush=True)
+            return False
     if not await _ready():
         return False
     try:

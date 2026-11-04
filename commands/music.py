@@ -1,6 +1,5 @@
 from __future__ import annotations
 from discord import app_commands
-import asyncio
 import discord
 from utils import components_v2 as v2
 import time
@@ -9,6 +8,7 @@ from core import discord_api as core_discord_api
 from commands import music_audio as commands_music_audio
 from commands import music_panels as commands_music_panels
 from commands import music_player as commands_music_player
+from commands import music_playlists as commands_music_playlists
 from commands import music_relay as commands_music_relay
 from commands import music_search as commands_music_search
 from commands import music_select as commands_music_select
@@ -99,6 +99,16 @@ async def _play_search(interaction: discord.Interaction, query: str, source: str
     view.panel_message = await utils_command_responses.send_panel(interaction, view=view, style="music")
 
 
+@core_config.bot.tree.command(name="playlists", description="Открыть сохранённые плейлисты или найти треки для нового.")
+@app_commands.guild_only()
+@app_commands.describe(query="Запрос для поиска треков. Оставь пустым, чтобы открыть свои плейлисты.")
+async def playlists(interaction: discord.Interaction, query: str | None = None):
+    if query is None:
+        await commands_music_playlists.show_playlists(interaction)
+    else:
+        await _play_search(interaction, query)
+
+
 @core_config.bot.tree.command(name="queue", description="Открыть живую панель трека, очереди и управления музыкой.")
 async def queue_cmd(interaction: discord.Interaction):
     if interaction.guild is None:
@@ -126,10 +136,11 @@ async def queue_cmd(interaction: discord.Interaction):
         else:
             core_music_state.MUSIC_PLAYER_MESSAGES[guild_id] = updated_message
             core_music_state.MUSIC_PLAYER_VIEWS[guild_id] = view
-            asyncio.create_task(commands_music_panels._persist_music_player_reference(guild_id, updated_message))
+            saved = await commands_music_panels._persist_music_player_reference(guild_id, updated_message)
+            notice = "Открытая панель обновлена." if saved else "Панель обновлена. Не удалось сохранить её для следующего запуска."
             return await utils_command_responses.edit_deferred(
                 interaction,
-                embed=utils_helpers.vivian_embed("Открытая панель обновлена.", title="◆ Vivian // MUSIC"),
+                embed=utils_helpers.vivian_embed(notice, title="◆ Vivian // MUSIC"),
                 view=None,
             )
 
@@ -156,13 +167,14 @@ async def queue_cmd(interaction: discord.Interaction):
             interaction, "Панель музыки сейчас недоступна.", error=error)
     core_music_state.MUSIC_PLAYER_MESSAGES[guild_id] = await commands_music_player._durable_music_message(panel_message)
     core_music_state.MUSIC_PLAYER_VIEWS[guild_id] = view
-    asyncio.create_task(
-        commands_music_panels._persist_music_player_reference(guild_id, core_music_state.MUSIC_PLAYER_MESSAGES[guild_id])
+    saved = await commands_music_panels._persist_music_player_reference(
+        guild_id, core_music_state.MUSIC_PLAYER_MESSAGES[guild_id],
     )
+    notice = "Панель музыки открыта в канале." if saved else "Панель открыта. Не удалось сохранить её для следующего запуска."
     await utils_command_responses.edit_deferred(
         interaction,
         content=None,
-        embed=utils_helpers.vivian_embed("Панель музыки открыта в канале.", title="◆ Vivian // MUSIC"),
+        embed=utils_helpers.vivian_embed(notice, title="◆ Vivian // MUSIC"),
         view=None,
     )
 

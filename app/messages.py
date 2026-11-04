@@ -1,11 +1,9 @@
 from __future__ import annotations
 import asyncio
 from datetime import datetime
-import discord
 import os
 import time
 from core import config as core_config
-from core import ai_models as core_ai_models
 from commands import activity as commands_activity
 from commands import ai_moderation as commands_ai_moderation
 from commands import antispam as commands_antispam
@@ -16,11 +14,43 @@ from vivian import ambient as vivian_ambient
 from vivian import ambient_state as vivian_ambient_state
 from vivian import conversation as vivian_conversation
 from vivian import memory as vivian_memory
-from vivian import memory_card as vivian_memory_card
-from vivian import dialogue as vivian_dialogue
 from vivian import chat_impact as vivian_chat_impact
 from utils import helpers as utils_helpers
-from app import message_observers
+from app import chat_routing, message_observers
+
+
+async def _deliver_chat_turn(message, trigger, reply_target):
+    key = (message.guild.id if message.guild else 0, message.channel.id, message.author.id)
+    lock = core_state.AI_DIALOGUE_LOCKS.setdefault(key, asyncio.Lock())
+    lock_started = time.monotonic()
+    if lock.locked():
+        print(f"[AI] Dialogue queued; message_id={message.id}; trigger={trigger}", flush=True)
+    async with lock:
+        print(
+            f"[AI] Dialogue acquired; message_id={message.id}; trigger={trigger}; "
+            f"lock_wait_ms={(time.monotonic() - lock_started) * 1000:.0f}", flush=True,
+        )
+        if await vivian_conversation._handle_vivian_conversation(message, reply_target):
+            chat_routing.note_reply(message)
+
+
+async def _handle_direct_message(message, stats_snapshot):
+    async def persist_stats():
+        await core_database._persist_stats_snapshot(*stats_snapshot)
+
+    timings = {}
+    stats_task = message_observers.start_observer("stats", message.id, persist_stats, timings)
+    try:
+        trigger, reply_target = await chat_routing.select_turn(message)
+        if trigger is not None:
+            await _deliver_chat_turn(message, trigger, reply_target)
+        else:
+            await core_config.bot.process_commands(message)
+    finally:
+        if stats_task is None:
+            await message_observers.run_observer("stats", message.id, persist_stats, timings)
+        else:
+            await message_observers.finish_observers((stats_task,))
 
 
 @core_config.bot.event
@@ -35,20 +65,12 @@ async def on_message(message):
             flush=True,
         )
         return
-    reply_target = utils_helpers._vivian_reply_reference(message)
-    directly_addressed = (core_config.bot.user is not None and core_config.bot.user in message.mentions) or reply_target is not None
-    if directly_addressed:
-        print(
-            f"[AI] Message ingress; message_id={message.id}; "
-            f"instance={core_config.BOT_INSTANCE_ID}; pid={os.getpid()}; "
-            f"received_at={datetime.now(core_config.MOSCOW_TIMEZONE).isoformat(timespec='milliseconds')}",
-            flush=True,
-        )
-    vivian_ambient_state._ambient_note_arrival(message)
     now = time.time()
     moderation_started = time.monotonic()
-    if await commands_antispam._moderate_message_spam(message, now):
-        return
+    if message.guild is not None:
+        vivian_ambient_state._ambient_note_arrival(message)
+        if await commands_antispam._moderate_message_spam(message, now):
+            return
     spam_ms = (time.monotonic() - moderation_started) * 1000
     rank_stats = None
     daily_stats = None
@@ -84,14 +106,19 @@ async def on_message(message):
         dict(daily_stats) if daily_stats is not None else None,
         dict(data),
     )
+    if message.guild is None:
+        await _handle_direct_message(message, stats_snapshot)
+        return
 
     observers, observer_timings = [], {}
+    trigger = None
     stats_started = False
     try:
         moderation_started = time.monotonic()
         if await commands_ai_moderation._moderate_ai_content(message, now):
             return
         moderation_ms = (time.monotonic() - moderation_started) * 1000
+        trigger, reply_target = await chat_routing.select_turn(message)
         # Both moderation passes retain priority. Accepted counters are copied
         # above, so newer gateway messages cannot mutate a pending snapshot.
         operations = (
@@ -112,49 +139,27 @@ async def on_message(message):
         try:
             # Privacy filtering and the current turn enter memory before
             # conversation preparation; only unrelated observers overlap it.
-            await vivian_memory._remember_chat_message(message, directly_addressed=directly_addressed)
+            await vivian_memory._remember_chat_message(message, directly_addressed=trigger is not None)
         except Exception as error:
             print(f"[AI Memory] Observer failed; message_id={message.id}; error={error!r}", flush=True)
         memory_ms = (time.monotonic() - memory_started) * 1000
         ambient_started = time.monotonic()
         try:
-            await vivian_ambient._ambient_observe(message, directly_addressed=directly_addressed)
+            await vivian_ambient._ambient_observe(message, directly_addressed=trigger is not None)
         except Exception as error:
             print(f"[Ambient] Observer failed; message_id={message.id}; error={error!r}", flush=True)
         ambient_ms = (time.monotonic() - ambient_started) * 1000
 
-        # Direct mentions and replies to Vivian continue a personal conversation.
-        ai_configured = core_ai_models.is_configured(message.guild.id if message.guild else 0, message.author.id)
-        if directly_addressed:
+        if trigger:
             print(
-                f"[AI] Mention received; message_id={message.id}; "
+                f"[AI] Chat turn received; message_id={message.id}; trigger={trigger}; "
                 f"instance={core_config.BOT_INSTANCE_ID}; pid={os.getpid()}; "
-                f"AI configured={ai_configured}; "
                 f"preprocess_ms={(time.monotonic() - started) * 1000:.0f}; "
                 f"spam_ms={spam_ms:.0f}; moderation_ms={moderation_ms:.0f}; "
                 f"memory_observe_ms={memory_ms:.0f}; ambient_ms={ambient_ms:.0f}",
                 flush=True,
             )
-        local_reply = (vivian_memory_card.MEMORY_QUESTION_PATTERN.search(message.content or "")
-                       or vivian_dialogue.CREATOR_QUESTION_PATTERN.search(message.content or ""))
-        if directly_addressed and (ai_configured or local_reply):
-            history_key = (message.guild.id if message.guild else 0, message.channel.id, message.author.id)
-            lock = core_state.AI_DIALOGUE_LOCKS.setdefault(history_key, asyncio.Lock())
-            lock_started = time.monotonic()
-            if lock.locked():
-                print(f"[AI] Dialogue queued; message_id={message.id}", flush=True)
-            async with lock:
-                print(
-                    f"[AI] Dialogue acquired; message_id={message.id}; "
-                    f"lock_wait_ms={(time.monotonic() - lock_started) * 1000:.0f}", flush=True,
-                )
-                await vivian_conversation._handle_vivian_conversation(message, reply_target)
-        elif directly_addressed:
-            print("[AI] Selected model provider is not configured; AI replies are disabled.", flush=True)
-            try:
-                await utils_helpers._reply_once(message, "AI-канал не настроен.")
-            except discord.DiscordException:
-                pass
+            await _deliver_chat_turn(message, trigger, reply_target)
         await core_config.bot.process_commands(message)
     finally:
         if not stats_started:
@@ -165,7 +170,7 @@ async def on_message(message):
                 lambda: core_database._persist_stats_snapshot(*stats_snapshot), observer_timings,
             )
         await message_observers.finish_observers(observers)
-        if directly_addressed:
+        if trigger:
             print(
                 f"[AI] Message handled; message_id={message.id}; "
                 f"handler_ms={(time.monotonic() - started) * 1000:.0f}; "

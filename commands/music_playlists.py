@@ -1,4 +1,9 @@
 from __future__ import annotations
+import json
+import sqlite3
+import time
+
+from psycopg import Error as PostgresError
 from psycopg.types.json import Jsonb
 import discord
 from utils import components_v2 as v2
@@ -6,6 +11,7 @@ from core import config as core_config
 from commands import music_audio as commands_music_audio
 from commands import music_select as commands_music_select
 from core import database as core_database
+from core import feature_storage
 from core import music_state as core_music_state
 from utils import helpers as utils_helpers
 from visuals import panels as visuals_panels
@@ -22,53 +28,85 @@ def _playlist_track_data(track: dict) -> dict:
     }
 
 
-async def _save_music_playlist(guild_id: int, owner_id: int, name: str, tracks: list[dict]) -> bool:
+def _local_playlist_schema(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS music_playlists (
+        guild_id INTEGER NOT NULL, owner_id INTEGER NOT NULL,
+        name TEXT NOT NULL, name_key TEXT NOT NULL, tracks TEXT NOT NULL,
+        updated_at REAL NOT NULL, PRIMARY KEY (guild_id, owner_id, name_key)
+    )""")
+
+
+async def _save_music_playlist(guild_id: int, owner_id: int, name: str, tracks: list[dict]) -> None:
     safe_name = name.strip()[:80]
     safe_tracks = [_playlist_track_data(track) for track in tracks[:10]]
     if not safe_name or not safe_tracks or any(not track["webpage_url"] for track in safe_tracks):
         raise ValueError("Укажи название и хотя бы один найденный трек.")
 
-    playlist = {"name": safe_name, "tracks": safe_tracks}
-    if core_database.db_pool is None:
-        core_music_state.MUSIC_PLAYLISTS[(guild_id, owner_id)][safe_name.casefold()] = playlist
-        return False
-
-    try:
-        async with core_database.db_pool.connection() as connection:
-            await connection.execute(
-                """INSERT INTO public.music_playlists (guild_id, owner_id, name, tracks)
-                   VALUES (%s, %s, %s, %s)
-                   ON CONFLICT (guild_id, owner_id, name) DO UPDATE SET
-                       tracks = EXCLUDED.tracks,
-                       updated_at = now()""",
-                (guild_id, owner_id, safe_name, Jsonb(safe_tracks)),
+    if not core_config.DATABASE_URL:
+        def save(connection):
+            _local_playlist_schema(connection)
+            connection.execute(
+                """INSERT INTO music_playlists (guild_id, owner_id, name, name_key, tracks, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (guild_id, owner_id, name_key) DO UPDATE SET
+                       name = EXCLUDED.name, tracks = EXCLUDED.tracks, updated_at = EXCLUDED.updated_at""",
+                (guild_id, owner_id, safe_name, safe_name.casefold(), json.dumps(safe_tracks), time.time()),
             )
-        core_music_state.MUSIC_PLAYLISTS[(guild_id, owner_id)][safe_name.casefold()] = playlist
-        return True
-    except Exception as error:
-        print(f"[Music playlists] Save failed for guild {guild_id}: {error!r}", flush=True)
-        core_music_state.MUSIC_PLAYLISTS[(guild_id, owner_id)][safe_name.casefold()] = playlist
-        return False
+        await feature_storage.run_local(save)
+        return
+
+    async with core_database.db_pool.connection() as connection:
+        await connection.execute(
+            """INSERT INTO public.music_playlists (guild_id, owner_id, name, tracks)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (guild_id, owner_id, name) DO UPDATE SET
+                   tracks = EXCLUDED.tracks, updated_at = now()""",
+            (guild_id, owner_id, safe_name, Jsonb(safe_tracks)),
+        )
 
 
 async def _load_music_playlists(guild_id: int, owner_id: int) -> list[dict]:
-    if core_database.db_pool is not None:
-        try:
-            async with core_database.db_pool.connection() as connection:
-                cursor = await connection.execute(
-                    """SELECT name, tracks FROM public.music_playlists
-                       WHERE guild_id = %s AND owner_id = %s
-                       ORDER BY updated_at DESC, name ASC LIMIT 25""",
-                    (guild_id, owner_id),
-                )
-                rows = await cursor.fetchall()
-            return [
-                {"name": name, "tracks": tracks if isinstance(tracks, list) else []}
-                for name, tracks in rows
-            ]
-        except Exception as error:
-            print(f"[Music playlists] Load failed for guild {guild_id}: {error!r}", flush=True)
-    return list(core_music_state.MUSIC_PLAYLISTS[(guild_id, owner_id)].values())[:25]
+    if not core_config.DATABASE_URL:
+        def load(connection):
+            _local_playlist_schema(connection)
+            rows = connection.execute(
+                """SELECT name, tracks FROM music_playlists WHERE guild_id = ? AND owner_id = ?
+                   ORDER BY updated_at DESC, name ASC LIMIT 25""",
+                (guild_id, owner_id),
+            )
+            return [{"name": name, "tracks": json.loads(tracks)} for name, tracks in rows]
+        return await feature_storage.run_local(load)
+
+    async with core_database.db_pool.connection() as connection:
+        cursor = await connection.execute(
+            """SELECT name, tracks FROM public.music_playlists WHERE guild_id = %s AND owner_id = %s
+               ORDER BY updated_at DESC, name ASC LIMIT 25""",
+            (guild_id, owner_id),
+        )
+        rows = await cursor.fetchall()
+    return [{"name": name, "tracks": tracks if isinstance(tracks, list) else []} for name, tracks in rows]
+
+
+async def show_playlists(interaction: discord.Interaction, search_view: MusicSearchView | None = None):
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    try:
+        playlists = await _load_music_playlists(interaction.guild.id, interaction.user.id)
+    except (PostgresError, sqlite3.Error, OSError) as error:
+        print(f"[Music playlists] Load failed; error={type(error).__name__}", flush=True)
+        return await utils_helpers.vivian_reply(interaction, "Не удалось загрузить плейлисты. Попробуй позже.", error=True, ephemeral=True)
+    view = MusicPlaylistView(interaction.guild.id, interaction.user.id, playlists, search_view=search_view)
+    visual = None
+    try:
+        if visuals_panels._can_upload_panel_visual(interaction.guild, interaction.channel):
+            visual = await visuals_panels._panel_visual_file("music")
+    except Exception as error:
+        print(f"[Music playlists] Visual unavailable; error={type(error).__name__}", flush=True)
+    view.visual_enabled = visual is not None
+    try:
+        view.panel_message = await v2.edit_original(
+            interaction, embed=view.make_embed(), view=view, attachments=[visual] if visual else [],
+        )
+    except discord.HTTPException:
+        view.stop()
 
 
 class MusicPlaylistNameModal(discord.ui.Modal, title="◆ Vivian // PLAYLIST"):
@@ -91,7 +129,7 @@ class MusicPlaylistNameModal(discord.ui.Modal, title="◆ Vivian // PLAYLIST"):
         await interaction.response.defer(ephemeral=True, thinking=True)
         name = self.playlist_name.value.strip()
         try:
-            persisted = await _save_music_playlist(
+            await _save_music_playlist(
                 interaction.guild.id,
                 interaction.user.id,
                 name,
@@ -99,11 +137,13 @@ class MusicPlaylistNameModal(discord.ui.Modal, title="◆ Vivian // PLAYLIST"):
             )
         except ValueError as error:
             return await utils_helpers.vivian_reply(interaction, str(error), title="◆ Vivian // ERROR", error=True, ephemeral=True)
-        storage_note = "сохранён" if persisted else "сохранён в памяти до перезапуска"
-        response = f"Плейлист **{name}** {storage_note} · треков: {len(self.tracks)}."
+        except (PostgresError, sqlite3.Error, OSError) as error:
+            print(f"[Music playlists] Save failed; error={type(error).__name__}", flush=True)
+            return await utils_helpers.vivian_reply(interaction, "Не удалось сохранить плейлист. Попробуй позже.", error=True, ephemeral=True)
+        response = f"Плейлист **{name}** сохранён · треков: {len(self.tracks)}."
         await utils_helpers.vivian_reply(interaction, response, title="◆ Vivian // PLAYLIST", ephemeral=True)
         # The confirmation above is private; keep a personal playlist name off public search.
-        self.search_view.notice = f"Плейлист {storage_note} · треков: {len(self.tracks)}."
+        self.search_view.notice = f"Плейлист сохранён · треков: {len(self.tracks)}."
         if self.search_view.panel_message is not None and not self.search_view.is_finished():
             try:
                 await v2.edit_message(self.search_view.panel_message,
@@ -145,17 +185,20 @@ class MusicPlaylistSelect(discord.ui.Select):
 
 
 class MusicPlaylistView(v2.ControllerView):
-    def __init__(self, search_view: MusicSearchView, playlists: list[dict]):
+    def __init__(self, guild_id: int, owner_id: int, playlists: list[dict], *, search_view: MusicSearchView | None = None):
         super().__init__(timeout=300)
-        self.guild_id = search_view.guild_id
-        self.owner_id = search_view.owner_id
-        # Copy search data, never reuse a public/expired controller in this private panel.
-        self.search_query = search_view.query
-        self.search_tracks = [dict(track) for track in search_view.tracks]
-        self.search_selected_indices = list(search_view.selected_indices)
-        self.search_page = search_view.page
-        self.search_notice = search_view.notice
-        self.search_notice_error = search_view.notice_error
+        self.guild_id = guild_id
+        self.owner_id = owner_id
+        if search_view is None:
+            self.remove_item(self.back_to_search)
+        else:
+            # Copy search data so the private panel owns its controller.
+            self.search_query = search_view.query
+            self.search_tracks = [dict(track) for track in search_view.tracks]
+            self.search_selected_indices = list(search_view.selected_indices)
+            self.search_page = search_view.page
+            self.search_notice = search_view.notice
+            self.search_notice_error = search_view.notice_error
         self.visual_enabled = False
         self.playlists = playlists[:25]
         self.selected_index: int | None = None
@@ -196,7 +239,7 @@ class MusicPlaylistView(v2.ControllerView):
             try:
                 await v2.edit_message(self.panel_message,
                     embed=utils_helpers.vivian_embed(
-                        "Время выбора истекло. Открой новый поиск командой `/play`.",
+                        "Время выбора истекло. Открой список командой `/playlists`.",
                         title="◆ Vivian // ПЛЕЙЛИСТЫ ЗАКРЫТЫ",
                     ),
                     view=None,

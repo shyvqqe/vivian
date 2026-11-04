@@ -19,10 +19,7 @@ def _today_parts(guild_id: int | None = None):
 
 async def _post_memory(guild: discord.Guild, channel: discord.abc.Messageable) -> bool:
     today_iso, month_day = _today_parts()
-    try:
-        best = await store.best_for_month_day(guild.id, month_day, today_iso)
-    except (sqlite3.Error, OSError):
-        return False
+    best = await store.best_for_month_day(guild.id, channel.id, month_day, today_iso)
     if best is None:
         return False
     year = best["message_date"][:4]
@@ -105,6 +102,9 @@ async def memories_on_raw_reaction_remove(payload: discord.RawReactionActionEven
 async def memories_now(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     channel = interaction.guild.get_channel(MEMORIES_CHANNEL_ID) or interaction.channel
-    posted = await _post_memory(interaction.guild, channel)
+    try:
+        posted = await _post_memory(interaction.guild, channel)
+    except (sqlite3.Error, OSError):
+        return await interaction.edit_original_response(content="Хранилище воспоминаний временно недоступно.")
     message = "Воспоминание опубликовано." if posted else "За эту дату в прошлые годы ничего не нашлось."
     await interaction.edit_original_response(content=message)

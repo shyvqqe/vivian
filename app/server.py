@@ -26,12 +26,14 @@ class _KeepAliveHandler(BaseHTTPRequestHandler):
             from app.github_updates import public_status
             from app.community import public_status as community_status
             from app.rooms import public_status as room_status
+            from core.database import public_status as storage_status
             ready = core_config.bot.is_ready()
             status = 200 if ready else 503
             content = json.dumps({
                 "discord_ready": ready,
                 "revision": core_config.DEPLOY_REVISION,
                 "chat_style": core_config.CHAT_STYLE_VERSION,
+                "storage": storage_status(),
                 "github_updates": public_status(),
                 "community": community_status(),
                 "private_rooms": room_status(),

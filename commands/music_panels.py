@@ -6,7 +6,21 @@ from core import config as core_config
 from core import discord_api as core_discord_api
 from commands import music_player as commands_music_player
 from core import database as core_database
+from core import feature_storage
 from core import music_state as core_music_state
+
+
+_restore_lock = asyncio.Lock()
+
+
+async def _local_panels(query, params=(), *, fetch=False):
+    def work(connection):
+        connection.execute("""CREATE TABLE IF NOT EXISTS music_player_panels (
+            guild_id INTEGER PRIMARY KEY, channel_id INTEGER NOT NULL, message_id INTEGER NOT NULL
+        )""")
+        cursor = connection.execute(query, params)
+        return cursor.fetchall() if fetch else None
+    return await feature_storage.run_local(work)
 
 
 async def _refresh_music_player(guild_id: int) -> None:
@@ -44,10 +58,18 @@ async def _refresh_music_player(guild_id: int) -> None:
         print(f"[Music panel] Ошибка обновления сервера {guild_id}: {error!r}", flush=True)
 
 
-async def _persist_music_player_reference(guild_id: int, message: discord.Message) -> None:
-    if core_database.db_pool is None or message.channel is None:
-        return
+async def _persist_music_player_reference(guild_id: int, message: discord.Message) -> bool:
+    if message.channel is None:
+        return False
     try:
+        if not core_config.DATABASE_URL:
+            await _local_panels(
+                """INSERT INTO music_player_panels (guild_id, channel_id, message_id) VALUES (?, ?, ?)
+                   ON CONFLICT (guild_id) DO UPDATE SET
+                       channel_id = EXCLUDED.channel_id, message_id = EXCLUDED.message_id""",
+                (guild_id, message.channel.id, message.id),
+            )
+            return True
         async with core_database.db_pool.connection() as connection:
             await connection.execute(
                 """INSERT INTO public.music_player_panels (guild_id, channel_id, message_id)
@@ -58,39 +80,47 @@ async def _persist_music_player_reference(guild_id: int, message: discord.Messag
                        updated_at = now()""",
                 (guild_id, message.channel.id, message.id),
             )
+        return True
     except Exception as error:
-        print(f"[Music panel] Не удалось сохранить ссылку панели сервера {guild_id}: {error!r}", flush=True)
+        print(f"[Music panel] Не удалось сохранить ссылку панели сервера {guild_id}: {type(error).__name__}", flush=True)
+        return False
 
 
 async def _delete_music_player_reference(guild_id: int) -> None:
-    if core_database.db_pool is None:
-        return
     try:
+        if not core_config.DATABASE_URL:
+            await _local_panels("DELETE FROM music_player_panels WHERE guild_id = ?", (guild_id,))
+            return
         async with core_database.db_pool.connection() as connection:
             await connection.execute(
                 "DELETE FROM public.music_player_panels WHERE guild_id = %s",
                 (guild_id,),
             )
     except Exception as error:
-        print(f"[Music panel] Не удалось удалить ссылку панели сервера {guild_id}: {error!r}", flush=True)
+        print(f"[Music panel] Не удалось удалить ссылку панели сервера {guild_id}: {type(error).__name__}", flush=True)
 
 
 async def _restore_music_player_panels() -> None:
-    if core_database.db_pool is None or core_discord_api.is_paused():
+    if core_discord_api.is_paused():
         return
     try:
-        async with core_database.db_pool.connection() as connection:
-            cursor = await connection.execute(
-                "SELECT guild_id, channel_id, message_id FROM public.music_player_panels"
-            )
-            rows = await cursor.fetchall()
+        if not core_config.DATABASE_URL:
+            rows = await _local_panels("SELECT guild_id, channel_id, message_id FROM music_player_panels", fetch=True)
+        else:
+            async with core_database.db_pool.connection() as connection:
+                cursor = await connection.execute(
+                    "SELECT guild_id, channel_id, message_id FROM public.music_player_panels"
+                )
+                rows = await cursor.fetchall()
     except Exception as error:
-        print(f"[Music panel] Не удалось прочитать сохранённые панели: {error!r}", flush=True)
+        print(f"[Music panel] Не удалось прочитать сохранённые панели: {type(error).__name__}", flush=True)
         return
 
     for guild_id, channel_id, message_id in rows:
         if core_discord_api.is_paused():
             return
+        if guild_id in core_music_state.MUSIC_PLAYER_MESSAGES:
+            continue
         try:
             channel = core_config.bot.get_channel(channel_id) or await core_config.bot.fetch_channel(channel_id)
             message = await channel.fetch_message(message_id)
@@ -110,6 +140,12 @@ async def _restore_music_player_panels() -> None:
             print(f"[Music panel] Не удалось восстановить панель сервера {guild_id}: {error!r}", flush=True)
         except Exception as error:
             print(f"[Music panel] Ошибка восстановления панели сервера {guild_id}: {error!r}", flush=True)
+
+
+@core_config.bot.listen("on_ready")
+async def restore_saved_music_panels():
+    async with _restore_lock:
+        await _restore_music_player_panels()
 
 
 async def _music_player_refresh_loop() -> None:

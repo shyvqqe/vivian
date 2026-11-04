@@ -59,7 +59,7 @@ def snapshot(member):
         "badges": badges, "achievements": unlocked, "stats": stats,
         "today_messages": max(0, int(today_stats.get("messages", 0))),
         "observed_members": len(known), "updated_at": int(discord.utils.utcnow().timestamp()),
-        "storage_ready": database.db_pool is not None,
+        "storage_ready": database.is_ready(),
     }
 
 

@@ -4,6 +4,7 @@ import discord
 import hashlib
 import json
 import re
+import time
 from core import config as core_config
 from commands import antispam as commands_antispam
 from core import ai_models as core_ai_models
@@ -79,10 +80,10 @@ async def _classify_ai_moderation(message: discord.Message, now: float) -> str |
         if isinstance(reference_content, str) and reference_content.strip():
             classification_input += f"\nКонтекст ответа: {reference_content[:400]}"
         loop = asyncio.get_running_loop()
-        options = {"max_completion_tokens": 384}
+        options = {"max_completion_tokens": 384, "_deadline": time.monotonic() + 5}
         if model.lower().startswith("openai/gpt-oss-"):
             options["reasoning_effort"] = "low"
-        completion = await loop.run_in_executor(
+        request = loop.run_in_executor(
             None,
             lambda: core_ai_models.create_completion(
                 model=model,
@@ -93,6 +94,7 @@ async def _classify_ai_moderation(message: discord.Message, now: float) -> str |
                 **options,
             ),
         )
+        completion = await asyncio.wait_for(request, timeout=5)
         raw = completion.choices[0].message.content
         if not isinstance(raw, str) or not raw.strip():
             return None
@@ -111,7 +113,7 @@ async def _classify_ai_moderation(message: discord.Message, now: float) -> str |
     except Exception as error:
         print(
             f"[AI Moderation] Classification unavailable; message_id={message.id}; "
-            f"guild_id={message.guild.id}; error={type(error).__name__}: {error}",
+            f"guild_id={message.guild.id}; error={type(error).__name__}",
             flush=True,
         )
         return None

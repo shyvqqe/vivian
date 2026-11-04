@@ -243,25 +243,7 @@ class MusicSearchView(v2.ControllerView):
             return await utils_helpers.vivian_reply(interaction, "Эта панель связана с другим участником.", error=True, ephemeral=True)
         if interaction.guild is None:
             return await utils_helpers.vivian_reply(interaction, "Плейлисты доступны только на сервере.", error=True, ephemeral=True)
-        # A personal collection must never replace the public discovery panel.
-        await interaction.response.defer(thinking=True, ephemeral=True)
-        playlists = await commands_music_playlists._load_music_playlists(interaction.guild.id, interaction.user.id)
-        view = commands_music_playlists.MusicPlaylistView(self, playlists)
-        visual = None
-        try:
-            if visuals_panels._can_upload_panel_visual(interaction.guild, interaction.channel):
-                visual = await visuals_panels._panel_visual_file("music")
-        except Exception as error:
-            print(f"[Music playlists] Visual unavailable; error={type(error).__name__}", flush=True)
-        view.visual_enabled = visual is not None
-        try:
-            view.panel_message = await v2.edit_original(
-                interaction, embed=view.make_embed(), view=view,
-                attachments=[visual] if visual else [],
-            )
-        except discord.HTTPException:
-            view.stop()
-            return
+        await commands_music_playlists.show_playlists(interaction, search_view=self)
 
     @discord.ui.button(label="Закрыть", style=discord.ButtonStyle.secondary, row=2)
     async def close_panel(self, interaction: discord.Interaction, button: discord.ui.Button):

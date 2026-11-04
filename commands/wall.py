@@ -5,8 +5,15 @@ import sqlite3
 import discord
 from discord import app_commands
 
-from core import config as core_config, friends_store, wall_store as store
+from core import config as core_config, wall_store as store
 from utils import helpers as utils_helpers
+
+try:
+    from core.friends_store import are_friends
+except ModuleNotFoundError as error:
+    if error.name != "core.friends_store":
+        raise
+    are_friends = None
 
 
 def _safe_name(member: discord.abc.User) -> str:
@@ -118,8 +125,15 @@ def register_views():
 
 
 async def _check_access(interaction, owner: discord.Member, *, for_posting: bool) -> bool:
-    privacy = await store.get_privacy(interaction.guild_id, owner.id)
-    is_friend = await friends_store.are_friends(interaction.guild_id, interaction.user.id, owner.id)
+    try:
+        privacy = await store.get_privacy(interaction.guild_id, owner.id)
+        is_friend = False
+        if privacy == "friends" and interaction.user.id != owner.id and are_friends is not None:
+            is_friend = await are_friends(interaction.guild_id, interaction.user.id, owner.id)
+    except (sqlite3.Error, OSError):
+        await utils_helpers.vivian_reply(
+            interaction, "Хранилище временно недоступно. Попробуй позже.", error=True, ephemeral=True)
+        return False
     allowed = (store.can_post if for_posting else store.can_view)(privacy, interaction.user.id, owner.id, is_friend)
     if not allowed:
         reason = "постить на эту стену" if for_posting else "смотреть эту стену"
@@ -202,6 +216,9 @@ async def wall(interaction: discord.Interaction, user: discord.Member = None,
     app_commands.Choice(name="Никто", value="none"),
 ])
 async def wall_privacy(interaction: discord.Interaction, setting: app_commands.Choice[str]):
+    if setting.value == "friends" and are_friends is None:
+        return await utils_helpers.vivian_reply(
+            interaction, "Режим «Друзья» недоступен без базы друзей.", error=True, ephemeral=True)
     try:
         await store.set_privacy(interaction.guild_id, interaction.user.id, setting.value)
     except (ValueError, sqlite3.Error, OSError) as error:

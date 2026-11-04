@@ -68,9 +68,10 @@ class AIView(v2.ControllerView):
         current = ai_models.get_text_model(self.guild_id, self.owner_id)
         default = ai_models.get_default_model()
         vision = ai_models.get_vision_model(self.guild_id, self.owner_id)
+        scope = "на этом сервере" if self.guild_id else "в личных сообщениях"
         embed = helpers.vivian_embed(title="Твой голос Vivian · выбор модели", description=(
             f"**{ai_models.display_name(current)}**\n"
-            "Личная настройка для твоих разговоров на этом сервере."
+            f"Личная настройка для твоих разговоров {scope}."
         ))
         embed.add_field(name="ПО УМОЛЧАНИЮ", value=ai_models.display_name(default), inline=True)
         embed.add_field(name="ИЗОБРАЖЕНИЯ", value=ai_models.display_name(vision), inline=True)
@@ -88,6 +89,7 @@ class AIView(v2.ControllerView):
             ), inline=False)
             embed.add_field(name="КОНТЕКСТ И КВОТЫ", value=(
                 "Контекст получает провайдер выбранной модели; изображения — провайдер модели выше. "
+                "При автоматическом выборе другая подключённая модель может ответить при сбое. "
                 "У Gemini и Groq квоты и оплата зависят от тарифа API-аккаунта. "
                 "OpenRouter использует только варианты `:free`; автоматической замены на платную модель нет."
             ), inline=False)

@@ -8,7 +8,8 @@ import traceback
 import discord
 
 from core import config
-from core import database
+from core import database, hub_store
+from app import dashboard, hub, legacy_life, legacy_social, life, modsuite, shop, social
 
 try:
     from vivian import ambient as vivian_ambient
@@ -69,16 +70,12 @@ COMMAND_MODULES = [
     "capsule",
     "crossroads",
     "exchange",
-    "friends",
-    "poke",
-    "confess",
-    "crush",
-    "wall",
-    "status",
-    "vibecheck",
-    "memories",
-    "birthday",
-    "story",
+    "community_play",
+    "economy",
+    "setup",
+    "life",
+    "modsuite",
+    "social",
 ]
 
 app = {}
@@ -112,7 +109,8 @@ rooms = app.get("rooms")
 server = app.get("server")
 
 for n, m in commands.items():
-    globals()[n] = m
+    if n not in {"life", "modsuite", "social"}:
+        globals()[n] = m
 
 bot = config.bot
 _original_setup_hook = bot.setup_hook
@@ -144,6 +142,11 @@ async def setup_hook():
             "Check VIVIAN_DATA_DIR and write permissions."
         ) from None
 
+    if await hub_store.initialize():
+        await legacy_life.migrate()
+        await legacy_social.migrate()
+    legacy_social.register_views(bot)
+
     try:
         from core import ai_models, ai_preferences
         await ai_preferences.load_preferences()
@@ -167,6 +170,23 @@ async def setup_hook():
 bot.setup_hook = setup_hook
 
 
+def _stored_event(handler):
+    async def guarded(payload):
+        if database.db_pool is None:
+            return
+        try:
+            await handler(payload)
+        except Exception as error:
+            print(f"[Archive] Event deferred; event={handler.__name__}; error={type(error).__name__}", flush=True)
+    return guarded
+
+
+bot.add_listener(_stored_event(life.reaction_added), "on_raw_reaction_add")
+bot.add_listener(_stored_event(life.reaction_removed), "on_raw_reaction_remove")
+bot.add_listener(_stored_event(life.message_deleted), "on_raw_message_delete")
+bot.add_listener(_stored_event(life.bulk_deleted), "on_raw_bulk_message_delete")
+
+
 @bot.event
 async def on_ready():
     print(f"[Vivian] Logged in as {bot.user} (id={bot.user.id})", flush=True)
@@ -176,15 +196,12 @@ async def on_ready():
         (rooms, "start"),
         (room_panels, "start"),
         (community, "start"),
-        (commands.get("friends"), "register_views"),
-        (commands.get("poke"), "register_views"),
-        (commands.get("confess"), "register_views"),
-        (commands.get("wall"), "register_views"),
-        (commands.get("status"), "register_views"),
-        (commands.get("story"), "register_views"),
-        (commands.get("story"), "start"),
-        (commands.get("memories"), "start"),
-        (commands.get("birthday"), "start"),
+        (social, "start"),
+        (modsuite, "start"),
+        (life, "start"),
+        (shop, "start"),
+        (hub, "start"),
+        (dashboard, "start"),
     ):
         if mod and hasattr(mod, attr):
             starters.append(getattr(mod, attr))
@@ -210,10 +227,8 @@ async def on_ready():
     if daily_mod and hasattr(daily_mod, "daily_summary_loop"):
         _start_loop(daily_mod.daily_summary_loop)
 
-    if not getattr(bot, "_web_music_bridge_task", None) or bot._web_music_bridge_task.done():
-        from vivian import music_web_bridge
-        bot._web_music_bridge_task = asyncio.create_task(music_web_bridge.run(bot))
-        print("[Vivian] Music bridge task started", flush=True)
+    from vivian import music_web_bridge
+    music_web_bridge.start(bot)
 
     print("[Vivian] Ready", flush=True)
 

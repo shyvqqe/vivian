@@ -23,3 +23,9 @@ services:
         sync: false
       - key: GROQ_VISION_MODEL
         sync: false
+      - key: GEMINI_MODERATION_MODEL
+        value: gemini-3.5-flash-lite
+      - key: GEMINI_TTS_MODEL
+        value: gemini-3.8-flash-lite-tts
+      - key: PUBLIC_SITE_URL
+        value: https://esil.life

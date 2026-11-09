@@ -24,10 +24,7 @@ def uses_local_storage():
 
 
 def is_ready():
-    pool = database.db_pool
-    return state.AI_MEMORY_READY and (uses_local_storage() or (
-        pool is not None and pool is _READY_POOL and not pool.closed
-    ))
+    return state.AI_MEMORY_READY and (uses_local_storage() or _ready_postgres_pool() is not None)
 
 
 def local_schema(connection):
@@ -49,29 +46,41 @@ def local_schema(connection):
     )""")
 
 
-async def _postgres_pool():
+def _ready_postgres_pool():
+    pool = database.db_pool
+    if pool is not None and pool is _READY_POOL and not pool.closed:
+        return pool
+    return None
+
+
+async def initialize_postgres():
     global _READY_POOL
     pool = database.db_pool
     if pool is None or pool.closed:
-        state.AI_MEMORY_READY = False
         return None
+    if _ready_postgres_pool() is pool:
+        return pool
     async with _SCHEMA_LOCK:
-        if _READY_POOL is pool:
-            state.AI_MEMORY_READY = True
+        if pool is not database.db_pool or pool.closed:
+            return None
+        if _ready_postgres_pool() is pool:
             return pool
         if state.AI_MEMORY_LAST_OPEN_ATTEMPT and time.monotonic() - state.AI_MEMORY_LAST_OPEN_ATTEMPT < 15:
             return None
         state.AI_MEMORY_LAST_OPEN_ATTEMPT = time.monotonic()
         state.AI_MEMORY_READY = False
         try:
-            async with asyncio.timeout(4), pool.connection() as connection:
+            async with asyncio.timeout(10), pool.connection() as connection, connection.pipeline():
                 for sql in state.AI_MEMORY_SCHEMA_SQL:
                     await connection.execute(sql)
         except Exception as error:
             print(f"[AI Memory] Schema unavailable; error={type(error).__name__}", flush=True)
             return None
+        if pool is not database.db_pool or pool.closed:
+            return None
         _READY_POOL = pool
         state.AI_MEMORY_READY = True
+        print("[AI Memory] PostgreSQL ready.", flush=True)
         return pool
 
 
@@ -143,7 +152,7 @@ async def _load(scope):
         if uses_local_storage():
             messages, facts = await feature_storage.run(lambda connection: _load_local(connection, scope))
         else:
-            pool = await _postgres_pool()
+            pool = _ready_postgres_pool()
             if pool is None:
                 return
             async with asyncio.timeout(3), pool.connection() as connection:
@@ -188,7 +197,7 @@ async def _ai_memory_read_turn(scope, uid, before_id):
                     ).fetchall()
                 rows = await feature_storage.run(work)
             else:
-                pool = await _postgres_pool()
+                pool = _ready_postgres_pool()
                 if pool is None:
                     return []
                 async with asyncio.timeout(3), pool.connection() as connection:
@@ -255,7 +264,7 @@ async def _write(scope, record, facts, candidates):
     if uses_local_storage():
         result = await feature_storage.run(lambda connection: _write_local(connection, scope, record, facts, candidates))
     else:
-        pool = await _postgres_pool()
+        pool = _ready_postgres_pool()
         if pool is None:
             return None
         async with asyncio.timeout(3), pool.connection() as connection:
@@ -335,7 +344,7 @@ async def _maintain():
     if uses_local_storage():
         await feature_storage.run(lambda connection: _maintain_local(connection, messages_before, facts_before))
     else:
-        pool = await _postgres_pool()
+        pool = _ready_postgres_pool()
         if pool is None:
             return
         async with asyncio.timeout(8), pool.connection() as connection:
@@ -361,6 +370,8 @@ async def ai_memory_flush_loop():
     from core import ai_preferences
 
     await ai_preferences.load_preferences()
+    if not uses_local_storage() and await initialize_postgres() is None:
+        return
     pending = state.AI_MEMORY_PENDING
     for key in list(islice(pending, _RETRY_BATCH)):
         item = pending.get(key)

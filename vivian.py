@@ -146,6 +146,8 @@ async def setup_hook():
         await legacy_life.migrate()
         await legacy_social.migrate()
     legacy_social.register_views(bot)
+    if memory_store is not None:
+        await memory_store.initialize_postgres()
 
     try:
         from core import ai_models, ai_preferences

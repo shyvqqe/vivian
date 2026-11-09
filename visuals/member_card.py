@@ -237,6 +237,44 @@ def _statistics(image, data, palette):
     draw.text((x, baseline), level_text, font=font, fill=palette["accent"], anchor="ls")
 
 
+def _community_band(image, data, palette):
+    social = data.get("social") if isinstance(data.get("social"), dict) else {}
+    economy = data.get("economy") if isinstance(data.get("economy"), dict) else {}
+    parts, details = [], []
+    friends = _integer(social.get("friend_count"))
+    if friends:
+        parts.append(f"Friends {friends}")
+    status = _text(" ".join(str(social.get(key) or "") for key in ("mood", "status_text")), 150)
+    if status:
+        parts.append(status)
+    relationship = _text(social.get("relationship_name"), 80)
+    if relationship:
+        parts.append(f"With {relationship}")
+    balance = _integer(economy.get("balance"))
+    if balance:
+        details.append(f"{_number(balance)} {_text(economy.get('currency'), 40) or 'sparks'}")
+    badges = economy.get("badges")
+    if isinstance(badges, list):
+        for item in badges[-3:]:
+            value = _text(item, 80)
+            branch, separator, tier = value.partition(":")
+            if separator and branch in {"speaker", "helper", "memologist", "night_owl", "voice", "season"}:
+                value = f"{branch.replace('_', ' ').title()} {tier}"
+            if value:
+                details.append(value)
+    if not parts and not details:
+        return
+    band = Image.new("RGBA", (1480, 44))
+    draw = ImageDraw.Draw(band)
+    for line, y, size, colour in (("  ·  ".join(parts), 1, 22, palette["muted"]),
+                                  ("  ·  ".join(details), 25, 16, palette["accent"])):
+        if not line:
+            continue
+        text, font = _fit(draw, line, 1478, size, minimum=size)
+        draw.text((0, y), text, font=font, fill=colour, anchor="lt")
+    image.alpha_composite(band, (60, 398))
+
+
 def _progress(image, ratio, palette):
     x, y, width, height = 63, 643, 1488, 42
     draw = ImageDraw.Draw(image)
@@ -271,6 +309,7 @@ def render_member_card(data: dict, avatar_bytes: bytes | None = None) -> bytes:
     ratio = min(1.0, xp / required)
     _portrait(image, avatar_bytes, palette)
     _nickname(image, name, palette)
+    _community_band(image, data, palette)
     _statistics(image, data, palette)
     footer = _gradient((WIDTH, HEIGHT - 601), palette["background_top"], palette["shadow"])
     image.alpha_composite(footer, (0, 601))
@@ -283,6 +322,9 @@ def render_member_card(data: dict, avatar_bytes: bytes | None = None) -> bytes:
     draw.text((60, 744), value, font=font, fill=palette["text"], anchor="ls")
     percent_font = _font(40)
     draw.text((1550, 744), percent, font=percent_font, fill=palette["accent"], anchor="rs")
+    if data.get("season"):
+        from visuals.season_style import apply_season
+        apply_season(image, palette, data["season"])
     output = BytesIO()
     image.convert("RGB").save(output, format="PNG", optimize=True)
     return output.getvalue()

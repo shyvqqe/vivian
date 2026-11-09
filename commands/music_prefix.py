@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import discord
 
 from commands import music_audio, music_panels, music_relay, music_search
+from core import music_state
 from utils import components_v2 as v2, helpers, music as music_utils
 from visuals import panels
 
@@ -25,6 +26,32 @@ class PlaybackResult:
 
 def _voice_channel(ctx):
     return getattr(getattr(ctx.author, "voice", None), "channel", None)
+
+
+def _request_parts(query):
+    query = query.strip()
+    first, _, rest = query.partition(" ")
+    source = SOURCE_ALIASES.get(first.casefold())
+    if source:
+        query = rest.strip()
+    query = music_relay._validated_music_query(query)
+    if music_search._is_youtube_url(query):
+        source = "youtube"
+    elif music_search._is_soundcloud_url(query):
+        source = "soundcloud"
+    return query, source
+
+
+def _first_search(query, source, fallback_source):
+    try:
+        tracks = music_relay._relay_search(query, source, 1)
+    except music_relay.RelayError:
+        if not fallback_source:
+            raise
+        tracks = []
+    if not tracks and fallback_source:
+        return music_relay._relay_search(query, fallback_source, 1)
+    return tracks
 
 
 def _card(ctx, text, *, title="Музыка Vivian", query=None, source=None, track=None, error=False):
@@ -66,7 +93,7 @@ async def _send(ctx, text, *, view=None, **card_options):
         print(f"[Music prefix] Reply failed; error={type(error).__name__}", flush=True)
 
 
-async def _start(ctx, query, source):
+async def _start(ctx, query, source, *, fallback_source=None, keep_channel=False):
     channel = _voice_channel(ctx)
     if channel is None:
         return PlaybackResult(False, "сначала зайди в голосовой")
@@ -78,11 +105,17 @@ async def _start(ctx, query, source):
             return PlaybackResult(False, "Разреши боту Connect и Speak в голосовом канале.")
     try:
         # Resolve first; the existing backend records which transport succeeded.
-        results = await music_audio._extract_in_executor(music_relay._relay_search, query, source, 1)
+        generation = music_state.MUSIC_GENERATION[ctx.guild.id] if keep_channel else None
+        results = await music_audio._extract_in_executor(_first_search, query, source, fallback_source)
         if not results:
             return PlaybackResult(False, "По этому запросу ничего не найдено.")
         track = results[0]
-        started = await music_audio.replace_current_track(ctx.guild, channel, track)
+        if keep_channel:
+            started = await music_audio.replace_current_track(
+                ctx.guild, channel, track, requester=ctx.author, expected_generation=generation,
+            )
+        else:
+            started = await music_audio.replace_current_track(ctx.guild, channel, track)
     except (ValueError, music_relay.RelayError) as error:
         return PlaybackResult(False, str(error))
     except Exception as error:
@@ -166,19 +199,11 @@ async def play_prefix_command(ctx, query):
     if _voice_channel(ctx) is None:
         await _send(ctx, "сначала зайди в голосовой", error=True, title="Нужен голосовой канал")
         return
-    query = query.strip()
-    first, separator, rest = query.partition(" ")
-    source = SOURCE_ALIASES.get(first.casefold())
-    if source:
-        query = rest.strip()
-    if not query or len(query) > 200:
-        await _send(ctx, "Напиши запрос от 1 до 200 символов: `!play название песни`",
-                    error=True, title="Какую песню включить?")
+    try:
+        query, source = _request_parts(query)
+    except ValueError as error:
+        await _send(ctx, str(error), error=True, title="Какую песню включить?")
         return
-    if music_search._is_youtube_url(query):
-        source = "youtube"
-    elif music_search._is_soundcloud_url(query):
-        source = "soundcloud"
     if source:
         result = await _start(ctx, query, source)
         await _send(ctx, result.text, title="На волне" if result.started else "Музыка не включилась",

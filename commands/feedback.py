@@ -66,7 +66,7 @@ def _image_url(message):
     return None
 
 
-@config.bot.tree.command(name="report", description="Посмотреть своё обращение или статус публичного предложения по номеру.")
+@config.bot.tree.command(name="feedback_report", description="Посмотреть своё обращение или статус публичного предложения по номеру.")
 @app_commands.guild_only()
 @app_commands.rename(item_id="id")
 @app_commands.describe(item_id="Номер ошибки или предложения из квитанции.")

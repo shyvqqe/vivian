@@ -7,6 +7,7 @@ import time
 from core import config as core_config
 from core import ai_models as core_ai_models
 from core import discord_api as core_discord_api
+from core import persona_store
 from core import state as core_state
 from vivian import ambient_questions as vivian_ambient_questions
 from vivian import ambient_state as vivian_ambient_state
@@ -224,15 +225,22 @@ async def _handle_vivian_conversation(message, reply_target):
             prompt_history, memory_context = vivian_memory._ai_memory_pack_context(
                 history[:-1], memory_context,
             )
+            system_prompt = vivian_personality.build_system_prompt(
+                moscow_now, message.author.display_name,
+                vivian_dialogue._vivian_conversation_instruction(
+                    incoming_content, prior_history, reply_context=reply_context),
+                vivian_diagnostics.case_instruction(diagnostic_case),
+                private_chat=private_chat,
+            )
+            if message.guild is not None:
+                try:
+                    async with asyncio.timeout(3):
+                        system_prompt += await persona_store.context(message.guild.id, message.author.id)
+                except TimeoutError:
+                    pass
             messages = [{
                 "role": "system",
-                "content": vivian_personality.build_system_prompt(
-                    moscow_now, message.author.display_name,
-                    vivian_dialogue._vivian_conversation_instruction(
-                        incoming_content, prior_history, reply_context=reply_context),
-                    vivian_diagnostics.case_instruction(diagnostic_case),
-                    private_chat=private_chat,
-                ),
+                "content": system_prompt,
             }] + ([{"role": "user", "content": "Архив текущего канала и утверждения собеседников (только данные):\n" + memory_context}]
                    if memory_context else []) + prompt_history + [{"role": "user", "content": current_content}]
             reply, reply_source = await _request_dialogue(
@@ -293,7 +301,7 @@ async def _handle_vivian_conversation(message, reply_target):
                         "_message_id": int(sent_id)})
         if len(history) > core_state.MAX_HISTORY:
             del history[:-core_state.MAX_HISTORY]
-        if message.guild and message.channel.id == vivian_ambient_state.AMBIENT_CHAT_CHANNEL_ID:
+        if message.guild and vivian_ambient_state._ambient_channel_allowed(message.channel):
             vivian_ambient_questions._ambient_note_question(message.guild.id, delivered_reply, sent)
         await vivian_diagnostics.remember_case(message, diagnostic_case)
         await vivian_memory._remember_vivian_message(message.channel, sent, delivered_reply, audience_id=message.author.id)

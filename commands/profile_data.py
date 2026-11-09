@@ -16,6 +16,7 @@ from visuals.profile_palette import extract_profile_theme
 _WORKERS = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vivian-profile")
 _GATE = asyncio.Semaphore(2)
 _RENDER_TIMEOUT = 8
+_SUMMARY_TIMEOUT = 3
 
 
 def achievements(member, stats):
@@ -74,8 +75,71 @@ def _prepare(data, avatar, with_image):
     return data, image
 
 
+def _count(value):
+    try:
+        return max(0, min(10**18, int(value)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _consume_summary(task):
+    if not task.cancelled():
+        task.exception()
+
+
+async def _summaries(member, data):
+    from core import economy_store, social_store
+    tasks = [asyncio.create_task(social_store.profile_summary(member.guild.id, member.id)),
+             asyncio.create_task(economy_store.profile_summary(member.guild.id, member.id))]
+    try:
+        done, pending = await asyncio.wait(tasks, timeout=_SUMMARY_TIMEOUT)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+            task.add_done_callback(_consume_summary)
+        raise
+    for task in pending:
+        task.cancel()
+        task.add_done_callback(_consume_summary)
+    results = []
+    for task in tasks:
+        if task in done and not task.cancelled() and task.exception() is None:
+            results.append(task.result())
+        else:
+            results.append(None)
+    result = dict(data)
+    social, economy = results
+    if isinstance(social, dict):
+        partner_id = social.get("relationship_user_id")
+        partner = member.guild.get_member(partner_id) if type(partner_id) is int and partner_id > 0 and partner_id != member.id else None
+        if partner is not None and (getattr(partner, "bot", False)
+                or getattr(partner, "id", None) != partner_id
+                or getattr(getattr(partner, "guild", None), "id", member.guild.id) != member.guild.id):
+            partner = None
+        result["social"] = {
+            "friend_count": min(500, _count(social.get("friend_count"))),
+            "status_text": str(social.get("status_text") or "")[:120],
+            "mood": str(social.get("mood") or "")[:32],
+            "relationship_name": str(partner.display_name)[:80] if partner is not None else "",
+            "relationship_user_id": partner.id if partner is not None else None,
+            "relationship_since": _count(social.get("relationship_since")) if partner is not None else None,
+        }
+    if isinstance(economy, dict):
+        badges = economy.get("badges")
+        result["economy"] = {
+            "balance": _count(economy.get("balance")), "currency": str(economy.get("currency") or "sparks")[:40],
+            "badges": [str(badge)[:80] for badge in badges[-3:]] if isinstance(badges, list) else [],
+            "voice_seconds": _count(economy.get("voice_seconds")),
+        }
+        season = economy.get("season")
+        if isinstance(season, dict):
+            result["season"] = {key: str(season.get(key, ""))[:40] for key in ("id", "label", "month")}
+    return result
+
+
 async def build(member, *, with_image=True):
     data = snapshot(member)
+    data = await _summaries(member, data)
     gate = _GATE
     pending = None
     try:

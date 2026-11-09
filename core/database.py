@@ -114,6 +114,8 @@ async def _open_persistent_storage() -> None:
                 await connection.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
             for sql in _MUSIC_TABLES:
                 await connection.execute(sql)
+            await connection.execute("ALTER TABLE public.music_playlists ENABLE ROW LEVEL SECURITY")
+            await connection.execute("ALTER TABLE public.music_player_panels ENABLE ROW LEVEL SECURITY")
         while await _flush_pending(pool):
             pass
         async with asyncio.timeout(10), pool.connection() as connection:

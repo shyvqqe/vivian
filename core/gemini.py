@@ -119,6 +119,8 @@ def _payload(messages, model, options):
     # Gemini's budget includes reasoning: leave room for a visible short answer.
     limit = max(2048, min(int(options.get("max_completion_tokens", 512)) * 4, 8192))
     generation = {"maxOutputTokens": limit, "candidateCount": 1}
+    if options.get("json_mode"):
+        generation["responseMimeType"] = "application/json"
     if model.startswith("gemini-3"):
         generation["thinkingConfig"] = {
             "thinkingLevel": "MINIMAL" if "flash-lite" in model else "LOW",

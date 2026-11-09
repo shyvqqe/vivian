@@ -80,7 +80,7 @@ class SuggestionVoteView(v2.ControllerView):
             await support.private_reply(interaction, "Предложение недоступно или голосование уже закрыто.")
         except Exception as error:
             print(f"[Feedback] Vote completion unavailable; id={item_id}; error={type(error).__name__}", flush=True)
-            await support.private_reply(interaction, f"Не удалось подтвердить обновление карточки. Проверь `/report id:{item_id}`.")
+            await support.private_reply(interaction, f"Не удалось подтвердить обновление карточки. Проверь `/feedback_report id:{item_id}`.")
 
     @discord.ui.button(label="За", style=discord.ButtonStyle.primary, custom_id="vivian_suggestion_up")
     async def up(self, interaction, button):
@@ -125,7 +125,7 @@ async def _submit(interaction, *, kind, owner_id, guild_id, title, body, details
                                            details=details or {}, seed_key=f"interaction:{interaction.id}")
             support.note_submission(guild_id, owner_id)
             if item.get("message_id"):
-                return await support.private_reply(interaction, f"Обращение #{item['id']} уже сохранено. Посмотреть: `/report id:{item['id']}`.")
+                return await support.private_reply(interaction, f"Обращение #{item['id']} уже сохранено. Посмотреть: `/feedback_report id:{item['id']}`.")
             image_url = None
             if data is not None:
                 uploaded = discord.File(BytesIO(data), filename=f"bug-{item['id']}.{extension}")
@@ -139,7 +139,7 @@ async def _submit(interaction, *, kind, owner_id, guild_id, title, body, details
                 receipt = f"Ошибка #{item['id']} сохранена и отправлена команде сервера в закрытый канал."
             else:
                 receipt = f"Предложение #{item['id']} опубликовано: {message.jump_url}"
-            await support.private_reply(interaction, receipt + f"\nСтатус: `/report id:{item['id']}`.")
+            await support.private_reply(interaction, receipt + f"\nСтатус: `/feedback_report id:{item['id']}`.")
     except ValueError as error:
         await support.private_reply(interaction, str(error))
     except store.CommunityUnavailable:
@@ -148,7 +148,7 @@ async def _submit(interaction, *, kind, owner_id, guild_id, title, body, details
         await support.private_reply(interaction, text)
     except Exception as error:
         print(f"[Feedback] Submission unavailable; kind={kind}; id={item['id'] if item else 'new'}; error={type(error).__name__}", flush=True)
-        text = (f"Обращение #{item['id']} сохранено, но отправку карточки завершить не удалось. Используй `/report id:{item['id']}`."
+        text = (f"Обращение #{item['id']} сохранено, но отправку карточки завершить не удалось. Используй `/feedback_report id:{item['id']}`."
                 if item else "Не получилось завершить обращение. Попробуй позже.")
         await support.private_reply(interaction, text)
     finally:

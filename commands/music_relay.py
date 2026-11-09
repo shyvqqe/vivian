@@ -89,7 +89,12 @@ def _relay_credentials() -> tuple[str, str] | None:
     if not base or not token:
         log.warning("RELAY_URL and RELAY_TOKEN must be set together; using local music backend")
         return None
-    parsed = urlsplit(base)
+    try:
+        parsed = urlsplit(base)
+        _ = parsed.port
+    except ValueError:
+        log.warning("Invalid RELAY_URL; using local music backend")
+        return None
     if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
             or parsed.password or parsed.query or parsed.fragment):
         log.warning("Invalid RELAY_URL; using local music backend")
@@ -232,8 +237,8 @@ def _relay_search(query: str, source: str, limit: int = 10) -> list[dict]:
     source = _source_for_query(query, source)
     limit = min(max(int(limit), 1), 10)
     if _relay_credentials() is not None:
-        request = Request(_relay_url("search", query, source, limit), headers={"Accept": "application/json"})
         try:
+            request = Request(_relay_url("search", query, source, limit), headers={"Accept": "application/json"})
             with urlopen(request, timeout=25) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
             if len(raw) > _MAX_RESPONSE_BYTES:
@@ -241,7 +246,9 @@ def _relay_search(query: str, source: str, limit: int = 10) -> list[dict]:
             data = json.loads(raw)
             if not isinstance(data, dict) or not isinstance(data.get("tracks"), list):
                 raise RelayError("Relay вернул некорректный список.")
-            return _normalise_tracks(data["tracks"], source, limit, "relay")
+            tracks = _normalise_tracks(data["tracks"], source, limit, "relay")
+            if tracks:
+                return tracks
         except (HTTPError, URLError, TimeoutError, OSError, ValueError, UnicodeError, RelayError) as exc:
             # Always drop the signed URL from errors/logs.
             log.warning("Music relay search failed (%s); using local backend", type(exc).__name__)
@@ -272,9 +279,3 @@ def _is_premature_end(track: dict | None, elapsed: float | None) -> bool:
     return not isinstance(duration, (int, float)) or duration > 8
 
 
-def _relay_audio_url(query: str, source: str = "youtube", *, prefer_local: bool = False) -> str:
-    query = _validated_music_query(query)
-    source = _source_for_query(query, source)
-    if not prefer_local and _relay_credentials() is not None:
-        return _relay_url("audio", query, source)
-    return _local_audio_url(query, source)

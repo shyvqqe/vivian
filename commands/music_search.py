@@ -53,17 +53,21 @@ def _soundcloud_title_score(query: str, entry: dict) -> float:
 
 
 def _resolve_music_url(url: str, fallback_title: str = "", source_hint: str | None = None,
-                       backend_hint: str | None = None):
+                       backend_hint: str | None = None, allow_fallback: bool = True):
     """Runs in an executor so local yt-dlp does not block the Discord event loop."""
     track = _make_relay_track(url, source_hint or "youtube")
     track["title"] = fallback_title or track["title"]
-    track["backend"] = ("local" if backend_hint == "local"
-                        or commands_music_relay._relay_credentials() is None else "relay")
-    track["stream_url"] = commands_music_relay._relay_audio_url(
-        track["relay_query"],
-        "soundcloud" if track["source"] == "SoundCloud" else "youtube",
-        prefer_local=backend_hint == "local",
-    )
+    query = track["relay_query"]
+    source = track["source"].casefold()
+    relay_available = commands_music_relay._relay_credentials() is not None
+    if backend_hint == "local" or not relay_available:
+        try:
+            track.update(stream_url=commands_music_relay._local_audio_url(query, source), backend="local")
+            return track
+        except commands_music_relay.RelayError:
+            if not relay_available or not allow_fallback:
+                raise
+    track.update(stream_url=commands_music_relay._relay_url("audio", query, source), backend="relay")
     return track
 
 

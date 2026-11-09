@@ -23,6 +23,13 @@ def uses_local_storage():
     return not config.DATABASE_URL and database.db_pool is None
 
 
+def is_ready():
+    pool = database.db_pool
+    return state.AI_MEMORY_READY and (uses_local_storage() or (
+        pool is not None and pool is _READY_POOL and not pool.closed
+    ))
+
+
 def local_schema(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS ai_chat_messages (
         guild_id INTEGER NOT NULL, channel_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
@@ -45,11 +52,12 @@ def local_schema(connection):
 async def _postgres_pool():
     global _READY_POOL
     pool = database.db_pool
-    if pool is None:
+    if pool is None or pool.closed:
         state.AI_MEMORY_READY = False
         return None
     async with _SCHEMA_LOCK:
         if _READY_POOL is pool:
+            state.AI_MEMORY_READY = True
             return pool
         if state.AI_MEMORY_LAST_OPEN_ATTEMPT and time.monotonic() - state.AI_MEMORY_LAST_OPEN_ATTEMPT < 15:
             return None
@@ -298,8 +306,11 @@ async def _ai_memory_save(scope, record, facts):
             print("[AI Memory] Retry queue full; oldest pending message discarded.", flush=True)
         pending[key] = (scope, record, dict(facts))
     try:
-        if await controls.guarded_memory_write(_write, scope, record, facts):
-            pending.pop(key, None)
+        # SQLite runs in a worker thread and retains its privacy lock through commit.
+        timeout = None if uses_local_storage() else 4
+        async with asyncio.timeout(timeout):
+            if await controls.guarded_memory_write(_write, scope, record, facts):
+                pending.pop(key, None)
     except Exception as error:
         print(f"[AI Memory] Write queued; channel={scope[1]}; error={type(error).__name__}", flush=True)
 

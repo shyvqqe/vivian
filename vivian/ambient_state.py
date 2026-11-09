@@ -1,9 +1,13 @@
 from __future__ import annotations
 from collections import deque
+import asyncio
+from datetime import datetime
 import discord
 import re
 import time
+from zoneinfo import ZoneInfo
 from core import config as core_config
+from core import database, guild_settings, hub_store
 from vivian import dialogue as vivian_dialogue
 from utils import helpers as utils_helpers
 
@@ -30,6 +34,7 @@ AMBIENT_CONTEXT = {}
 
 
 AMBIENT_STATE = {}
+AMBIENT_CONFIG = {}
 
 
 AMBIENT_SENSITIVE_PATTERN = re.compile(
@@ -68,13 +73,96 @@ AMBIENT_DAILY_QUESTIONS = (
 def _ambient_channel_allowed(channel) -> bool:
     if not isinstance(channel, discord.TextChannel):
         return False
-    if channel.id != AMBIENT_CHAT_CHANNEL_ID or channel.guild is None:
+    if channel.guild is None:
+        return False
+    setting = AMBIENT_CONFIG.get(channel.guild.id)
+    if setting is None:
+        legacy = core_config.bot.get_channel(AMBIENT_CHAT_CHANNEL_ID)
+        if (_persistent_storage() or legacy is None or legacy.guild.id != channel.guild.id
+                or channel.id != AMBIENT_CHAT_CHANNEL_ID):
+            return False
+        setting = {"enabled": True, "channel_id": AMBIENT_CHAT_CHANNEL_ID, "legacy": True}
+    if not setting.get("enabled") or setting.get("channel_id") != channel.id:
         return False
     member = channel.guild.me
     if member is None:
         return False
     permissions = channel.permissions_for(member)
-    return bool(permissions.view_channel and permissions.send_messages)
+    if not (permissions.view_channel and permissions.send_messages):
+        return False
+    if setting.get("legacy"):
+        return True
+    return bool(permissions.read_message_history and channel.permissions_for(channel.guild.default_role).view_channel)
+
+
+def _persistent_storage():
+    return bool(core_config.DATABASE_URL) or database.db_pool is not None
+
+
+async def refresh_configuration(guild):
+    setting = {"enabled": False, "channel_id": None, "legacy": False,
+               "timezone": str(core_config.MOSCOW_TIMEZONE), "persistent": _persistent_storage()}
+    legacy = guild.get_channel(AMBIENT_CHAT_CHANNEL_ID)
+    legacy = legacy if isinstance(legacy, discord.TextChannel) and legacy.guild.id == guild.id else None
+    if setting["persistent"]:
+        try:
+            async with asyncio.timeout(3):
+                values = await guild_settings.get(guild.id)
+            enabled, selected = values.get("ambient_enabled", True), values.get("conversation_channel_id")
+            setting["timezone"] = values.get("timezone") or setting["timezone"]
+            if enabled is True:
+                if type(selected) is int and selected > 0:
+                    channel = guild.get_channel(selected)
+                    if isinstance(channel, discord.TextChannel) and channel.guild.id == guild.id:
+                        setting.update(enabled=True, channel_id=channel.id)
+                elif selected is None and legacy is not None:
+                    setting.update(enabled=True, channel_id=legacy.id, legacy=True)
+        except Exception:
+            pass
+    elif legacy is not None:
+        setting.update(enabled=True, channel_id=legacy.id, legacy=True)
+    previous = AMBIENT_CONFIG.get(guild.id)
+    if previous is not None and (previous.get("channel_id") != setting["channel_id"] or not setting["enabled"]):
+        AMBIENT_CONTEXT.pop(guild.id, None)
+        AMBIENT_STATE.pop(guild.id, None)
+    AMBIENT_CONFIG[guild.id] = setting
+    channel = guild.get_channel(setting["channel_id"]) if setting["channel_id"] else None
+    return channel if channel is not None and _ambient_channel_allowed(channel) else None
+
+
+def _ambient_local_time(guild_id, now):
+    timezone = AMBIENT_CONFIG.get(guild_id, {}).get("timezone")
+    try:
+        selected = ZoneInfo(timezone) if isinstance(timezone, str) else core_config.MOSCOW_TIMEZONE
+    except (ValueError, KeyError):
+        selected = core_config.MOSCOW_TIMEZONE
+    return datetime.fromtimestamp(now, selected)
+
+
+async def _ambient_reserve(guild_id, channel_id, now, day, *, quiet=False):
+    setting = AMBIENT_CONFIG.get(guild_id, {})
+    if not setting.get("enabled") or setting.get("channel_id") != channel_id:
+        return False
+
+    def reserve(value):
+        count = int(value.get("count", 0)) if value.get("day") == day else 0
+        if (count >= AMBIENT_DAILY_REPLY_LIMIT or now - float(value.get("last_at", 0)) < AMBIENT_REPLY_COOLDOWN
+                or (quiet and value.get("quiet_day") == day)):
+            return False
+        value.update(day=day, count=count + 1, last_at=now)
+        if quiet:
+            value["quiet_day"] = day
+        return True
+
+    if _persistent_storage():
+        try:
+            return await hub_store.mutate(guild_id, "ambient", "quota", reserve)
+        except Exception:
+            return False
+    if not setting.get("legacy"):
+        return False
+    value = _ambient_state_for(guild_id).setdefault("delivery_quota", {})
+    return reserve(value)
 
 
 def _ambient_state_for(guild_id: int) -> dict:
@@ -151,7 +239,8 @@ def _ambient_context_for(guild_id: int, now: float) -> list[dict]:
     context = AMBIENT_CONTEXT.setdefault(guild_id, deque(maxlen=18))
     while context and now - context[0]["timestamp"] > AMBIENT_CONTEXT_TTL:
         context.popleft()
-    return list(context)
+    channel_id = AMBIENT_CONFIG.get(guild_id, {}).get("channel_id")
+    return [item for item in context if item.get("channel_id") == channel_id]
 
 
 def _ambient_has_recent_dialogue(state: dict) -> bool:

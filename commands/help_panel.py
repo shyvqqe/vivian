@@ -13,7 +13,10 @@ from visuals import panels
 def command_entries():
     entries = []
     for command in sorted(config.bot.tree.get_commands(), key=lambda item: item.name.casefold()):
-        if isinstance(command, app_commands.Group):
+        if isinstance(command, app_commands.ContextMenu):
+            kind = "message" if command.type is discord.AppCommandType.message else "member"
+            entries.append((f"Context menu · {command.name}", f"Right-click a {kind} → Apps → {command.name}."))
+        elif isinstance(command, app_commands.Group):
             for child in sorted(command.commands, key=lambda item: item.name.casefold()):
                 entries.append((f"/{command.name} {child.name}", child.description))
         else:

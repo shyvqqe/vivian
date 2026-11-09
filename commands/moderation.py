@@ -43,7 +43,12 @@ async def ban(interaction: discord.Interaction, user: discord.Member, reason: st
     if not await utils_command_responses.defer_command(interaction):
         return
     try:
-        await user.ban(reason=reason)
+        from app import modsuite_actions
+        case = await modsuite_actions.start_punishment(interaction, user, "ban", None, reason)
+        if case["state"] != "active":
+            return await utils_helpers.vivian_reply(interaction,
+                f"Ban case `{case['id']}` is saved with state `{case['state']}`. Pending actions retry from the database.",
+                ephemeral=True)
     except Exception as e:
         return await _action_failed(interaction, e, "Блокировка не выполнена. Проверь права Vivian и положение ролей.")
     await utils_command_responses.edit_deferred(
@@ -62,6 +67,8 @@ async def kick(interaction: discord.Interaction, user: discord.Member, reason: s
     if not await utils_command_responses.defer_command(interaction):
         return
     try:
+        from app import modsuite_actions
+        await modsuite_actions.guard(interaction, user, "kick_members")
         await user.kick(reason=reason)
     except Exception as e:
         return await _action_failed(interaction, e, "Удаление не выполнено. Проверь права Vivian и положение ролей.")

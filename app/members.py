@@ -5,6 +5,7 @@ import time
 from core import config as core_config
 from core import signal as core_signal
 from core import state as core_state
+from core import database, guild_settings, hub_store, modsuite_store
 from utils import mod_logs as utils_mod_logs
 from utils import helpers as utils_helpers
 from utils import components_v2 as v2
@@ -12,9 +13,13 @@ from visuals import panels as visuals_panels
 
 
 async def _welcome_member(member):
-    channel = member.guild.get_channel(core_config.WELCOME_CHANNEL_ID)
+    settings = await guild_settings.get(member.guild.id) if database.db_pool is not None else {}
+    if not settings.get("welcome_enabled", True):
+        return
+    overrides = await hub_store.get(member.guild.id, "settings", "guild", {}) if database.db_pool is not None else {}
+    channel = member.guild.get_channel(overrides.get("welcome_channel_id", core_config.WELCOME_CHANNEL_ID))
     if channel is None:
-        channel = await core_config.bot.fetch_channel(core_config.WELCOME_CHANNEL_ID)
+        return
     # The configured channel belongs to one server; do not greet in another one.
     if getattr(getattr(channel, "guild", None), "id", None) != member.guild.id:
         print(f"[Welcome] Channel belongs to another server; guild={member.guild.id}", flush=True)
@@ -57,10 +62,30 @@ async def on_member_join(member):
     core_state.RECENT_BAN_EVENTS.pop((member.guild.id, member.id), None)
     core_signal.update_server_signal(member.guild.id, activity=2.0)
     core_signal.store_echo(member.guild.id, "member_join", f"Участник присоединился: {member.id}")
+    if core_config.DATABASE_URL and database.db_pool is None:
+        print("[Welcome] Membership verification is waiting for storage.", flush=True)
+        return
+    settings = {}
+    autorole_id = core_config.AUTOROLE_ID
+    if database.db_pool is not None:
+        from app import modsuite
+        await modsuite.member_join(member)
+        try:
+            settings = await guild_settings.get(member.guild.id)
+            overrides = await hub_store.get(member.guild.id, "settings", "guild", {})
+            autorole_id = overrides.get("autorole_id", core_config.AUTOROLE_ID)
+            for kind in ("jail", "quarantine"):
+                case = await modsuite_store.punishment(member.guild.id, kind, member.id)
+                if (case and case.get("state") not in {"released", "superseded", "failed"}
+                        and (case.get("ends_at") is None or case["ends_at"] > time.time())):
+                    return
+        except Exception as error:
+            print(f"[Welcome] Membership settings unavailable; error={type(error).__name__}", flush=True)
+            return
     # Autorole
     try:
-        role = member.guild.get_role(core_config.AUTOROLE_ID)
-        if role:
+        role = member.guild.get_role(autorole_id) if autorole_id else None
+        if role and settings.get("autorole_enabled", True):
             await member.add_roles(role, reason="Autorole")
     except discord.DiscordException as error:
         print(f"[Welcome] Не удалось выдать роль участнику {member.id}: {error!r}", flush=True)

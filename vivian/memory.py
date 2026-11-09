@@ -146,7 +146,10 @@ async def _remember_vivian_message(channel, sent, content: str, audience_id: int
     record = {"message_id": int(mid), "author_id": core_config.bot.user.id, "audience_id": audience_id,
         "role": "assistant", "name": "Vivian", "text": content[:1800], "timestamp": time.time()}
     _ai_memory_cache_record(scope, record)
-    await vivian_memory_store._ai_memory_save(scope, record, {})
+    try:
+        await vivian_memory_store._ai_memory_save(scope, record, {})
+    except Exception as error:
+        print(f"[AI Memory] Reply archive unavailable; message_id={mid}; error={type(error).__name__}", flush=True)
 
 
 def _ai_memory_tokens(text: str) -> set[str]:

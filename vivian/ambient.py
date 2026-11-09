@@ -1,6 +1,5 @@
 from __future__ import annotations
 import asyncio
-from datetime import datetime
 from collections import deque
 import hashlib
 import json
@@ -16,9 +15,15 @@ from vivian import reactions as vivian_reactions
 from utils import helpers as utils_helpers
 
 
+refresh_configuration = vivian_ambient_state.refresh_configuration
+
+
 async def _ambient_reply(message, context: list[dict]) -> None:
     try:
         if core_discord_api.is_paused():
+            return
+        await refresh_configuration(message.guild)
+        if not context or any(item.get("channel_id") != message.channel.id for item in context):
             return
         model = core_ai_models.get_default_model()
         if not core_ai_models.has_provider(model) or not vivian_ambient_state._ambient_channel_allowed(message.channel):
@@ -33,9 +38,16 @@ async def _ambient_reply(message, context: list[dict]) -> None:
         if state["latest_message_id"] is not None and state["latest_message_id"] != message.id:
             return
         seriousness = any(vivian_reactions._mood_is_serious(vivian_reactions._mood_text(item["text"])) for item in context[-4:])
+        earlier_chat = []
+        if vivian_ambient_state.AMBIENT_CONFIG.get(message.guild.id, {}).get("legacy"):
+            try:
+                async with asyncio.timeout(3):
+                    earlier_chat = await vivian_memory._ai_memory_ambient_excerpt(message, context)
+            except Exception:
+                pass
         context_payload = {
             "live_dialogue": [{"name": item["name"], "text": item["text"]} for item in context],
-            "related_earlier_chat": await vivian_memory._ai_memory_ambient_excerpt(message, context),
+            "related_earlier_chat": earlier_chat,
         }
         instructions = (
             "Ты Vivian, ИИ-собеседница в общем Discord-чате. Пишешь о себе в женском роде. "
@@ -62,6 +74,12 @@ async def _ambient_reply(message, context: list[dict]) -> None:
         )
         if seriousness:
             instructions += "Тон последних сообщений серьёзный: не шути, не смейся и не обесценивай проблему. "
+        try:
+            from core import persona_store
+            async with asyncio.timeout(3):
+                instructions += await persona_store.context(message.guild.id, message.author.id)
+        except Exception:
+            pass
         options = {"max_completion_tokens": 1024, "_deadline": time.monotonic() + 20}
         completion = await asyncio.wait_for(
             asyncio.to_thread(
@@ -78,6 +96,7 @@ async def _ambient_reply(message, context: list[dict]) -> None:
         )
         choice = completion.choices[0]
         reply = vivian_ambient_state._ambient_finish_reply(choice.message.content, choice.finish_reason)
+        await refresh_configuration(message.guild)
         if not reply or not vivian_ambient_state._ambient_channel_allowed(message.channel):
             return
         state = vivian_ambient_state._ambient_state_for(message.guild.id)
@@ -93,6 +112,13 @@ async def _ambient_reply(message, context: list[dict]) -> None:
             return
         if core_discord_api.is_paused():
             return
+        now = time.time()
+        day = vivian_ambient_state._ambient_local_time(message.guild.id, now).date().isoformat()
+        if not await vivian_ambient_state._ambient_reserve(message.guild.id, message.channel.id, now, day):
+            return
+        await refresh_configuration(message.guild)
+        if not vivian_ambient_state._ambient_channel_allowed(message.channel) or core_discord_api.is_paused():
+            return
         nonce = hashlib.blake2b(f"vivian-ambient:{message.id}".encode(), digest_size=12).hexdigest()
         sent = await utils_helpers._send_message_once(message.channel, reply, nonce=nonce)
         vivian_ambient_questions._ambient_note_question(message.channel.guild.id, reply, sent)
@@ -105,7 +131,10 @@ async def _ambient_reply(message, context: list[dict]) -> None:
 
 async def _ambient_observe(message, directly_addressed: bool = False) -> None:
     """Call only after both spam checks and AI moderation accepted this message."""
-    if message.guild is None or message.author.bot or not vivian_ambient_state._ambient_channel_allowed(message.channel):
+    if message.guild is None or message.author.bot:
+        return
+    await refresh_configuration(message.guild)
+    if not vivian_ambient_state._ambient_channel_allowed(message.channel):
         return
     vivian_ambient_state._ambient_note_arrival(message)
     now = time.time()
@@ -135,6 +164,7 @@ async def _ambient_observe(message, directly_addressed: bool = False) -> None:
             "text": text,
             "timestamp": timestamp,
             "message_id": message.id,
+            "channel_id": message.channel.id,
         })
         vivian_ambient_state.AMBIENT_CONTEXT[message.guild.id] = deque(
             sorted(context, key=lambda item: item["message_id"])[-18:], maxlen=18,
@@ -145,7 +175,7 @@ async def _ambient_observe(message, directly_addressed: bool = False) -> None:
         return
     if core_discord_api.is_paused():
         return
-    day = datetime.now(core_config.MOSCOW_TIMEZONE).date().isoformat()
+    day = vivian_ambient_state._ambient_local_time(message.guild.id, now).date().isoformat()
     context = vivian_ambient_state._ambient_claim_reply(message.guild.id, now, day)
     if context is not None:
         asyncio.create_task(_ambient_reply(message, context))
@@ -156,18 +186,20 @@ async def ambient_chat_loop():
     if core_discord_api.is_paused():
         return
     now = time.time()
-    moscow_now = datetime.now(core_config.MOSCOW_TIMEZONE)
     active_guild_ids = {guild.id for guild in core_config.bot.guilds}
     for guild_id in list(vivian_ambient_state.AMBIENT_STATE):
         if guild_id not in active_guild_ids:
             vivian_ambient_state.AMBIENT_STATE.pop(guild_id, None)
             vivian_ambient_state.AMBIENT_CONTEXT.pop(guild_id, None)
+            vivian_ambient_state.AMBIENT_CONFIG.pop(guild_id, None)
         else:
             vivian_ambient_state._ambient_context_for(guild_id, now)
-    channel = core_config.bot.get_channel(vivian_ambient_state.AMBIENT_CHAT_CHANNEL_ID)
-    if channel is not None:
+    for guild in core_config.bot.guilds:
         try:
-            await vivian_ambient_questions._ambient_check_quiet_channel(channel, now, moscow_now)
+            channel = await refresh_configuration(guild)
+            if channel is not None:
+                local_now = vivian_ambient_state._ambient_local_time(guild.id, now)
+                await vivian_ambient_questions._ambient_check_quiet_channel(channel, now, local_now)
         except Exception as error:
             if core_discord_api.is_rate_limit_error(error):
                 return

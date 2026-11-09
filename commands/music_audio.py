@@ -124,27 +124,44 @@ def _reset_music_session(guild_id: int) -> int:
     return core_music_state.MUSIC_GENERATION[guild_id]
 
 
-async def replace_current_track(guild, voice_channel, track: dict) -> bool:
+def _member_channel(member):
+    return getattr(getattr(member, "voice", None), "channel", None)
+
+
+async def replace_current_track(guild, voice_channel, track: dict, *, requester=None,
+                                expected_generation: int | None = None) -> bool:
     async with _music_connect_lock(guild.id):
+        if expected_generation is not None and core_music_state.MUSIC_GENERATION[guild.id] != expected_generation:
+            return False
         voice = guild.voice_client
+        if requester is not None and (_member_channel(requester) != voice_channel
+                                      or (voice and voice.channel != voice_channel)):
+            return False
+        connected_here = not voice or not voice.is_connected()
         if voice is None:
             voice = await voice_channel.connect(timeout=45, reconnect=True)
-        elif not voice.is_connected():
+        elif connected_here:
             await voice.disconnect(force=True)
             voice = await voice_channel.connect(timeout=45, reconnect=True)
         elif voice.channel != voice_channel:
             await voice.move_to(voice_channel)
+        if requester is not None and _member_channel(requester) != voice_channel:
+            if connected_here:
+                await voice.disconnect(force=True)
+            return False
         generation = _reset_music_session(guild.id)
         voice.stop()
         core_music_state.MUSIC_CHANNELS[guild.id] = voice_channel
         core_music_state.MUSIC_QUEUES[guild.id].append(track)
-    started = await _play_next_track(guild.id)
+    started = await _play_next_track(guild.id, requester=requester)
     return bool(started and core_music_state.MUSIC_GENERATION[guild.id] == generation)
 
 
-async def _stop_music_session(guild) -> bool:
+async def _stop_music_session(guild, *, requester=None) -> bool:
     async with _music_connect_lock(guild.id):
         voice = guild.voice_client
+        if requester is not None and (voice is None or _member_channel(requester) != voice.channel):
+            return False
         _reset_music_session(guild.id)
         if voice:
             voice.stop()
@@ -216,7 +233,9 @@ async def _handle_track_end(guild_id: int, error, generation: int | None = None)
     if generation is not None and generation != core_music_state.MUSIC_GENERATION[guild_id]:
         return
     started_at = core_music_state.MUSIC_TRACK_STARTED_AT.pop(guild_id, None)
-    elapsed = time.monotonic() - started_at if started_at is not None else None
+    elapsed = core_music_state.MUSIC_TRACK_ELAPSED.get(guild_id, 0.0)
+    if started_at is not None:
+        elapsed += max(0.0, time.monotonic() - started_at)
     core_music_state.MUSIC_TRACK_ELAPSED[guild_id] = 0.0
     if guild_id in core_music_state.MUSIC_SKIP_PENDING:
         core_music_state.MUSIC_SKIP_PENDING.discard(guild_id)
@@ -242,6 +261,8 @@ async def _handle_track_end(guild_id: int, error, generation: int | None = None)
             retry_track["_veyr_retry_count"] = retry_track.get("_veyr_retry_count", 0) + 1
             if track.get("backend") == "relay":
                 retry_track["backend"] = "local"
+            elif commands_music_relay._relay_credentials() is not None:
+                retry_track["backend"] = "relay"
             core_music_state.MUSIC_QUEUES[guild_id].appendleft(retry_track)
         if core_music_state.MUSIC_QUEUES[guild_id]:
             guild = core_config.bot.get_guild(guild_id)
@@ -258,7 +279,7 @@ async def _handle_track_end(guild_id: int, error, generation: int | None = None)
     await _play_next_track(guild_id)
 
 
-async def _play_next_track(guild_id: int):
+async def _play_next_track(guild_id: int, *, requester=None):
     generation = core_music_state.MUSIC_GENERATION[guild_id]
     if core_music_state.MUSIC_STARTING_GENERATIONS.get(guild_id) == generation:
         return False
@@ -294,6 +315,7 @@ async def _play_next_track(guild_id: int):
             track["title"],
             track.get("source"),
             track.get("backend"),
+            track.get("_veyr_retry_count", 0) == 0,
         )
         if generation != core_music_state.MUSIC_GENERATION[guild_id]:
             return False
@@ -305,6 +327,9 @@ async def _play_next_track(guild_id: int):
         ffmpeg_path = await _ensure_ffmpeg()
         if (generation != core_music_state.MUSIC_GENERATION[guild_id]
                 or guild.voice_client is not voice or not voice.is_connected()):
+            return False
+        if requester is not None and _member_channel(requester) != voice.channel:
+            asyncio.create_task(_disconnect_when_idle(guild_id, voice, generation))
             return False
         source = discord.PCMVolumeTransformer(
             discord.FFmpegPCMAudio(

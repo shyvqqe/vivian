@@ -38,6 +38,9 @@ def _ambient_note_question(guild_id: int, content: str, sent) -> None:
 
 
 async def _ambient_read_channel_history(channel, now: float, today) -> None:
+    await vivian_ambient_state.refresh_configuration(channel.guild)
+    if not vivian_ambient_state._ambient_channel_allowed(channel):
+        return
     if core_discord_api.is_paused():
         return
     state = vivian_ambient_state._ambient_state_for(channel.guild.id)
@@ -85,7 +88,7 @@ async def _ambient_read_channel_history(channel, now: float, today) -> None:
     if any(core_config.bot.user and item.author.id == core_config.bot.user.id
            and marker in utils_helpers._vivian_reply_text(item) for item in recent):
         state["quiet_day"] = today.isoformat()
-    elif len(recent) == 200 and recent[-1].created_at.astimezone(core_config.MOSCOW_TIMEZONE).date() == today:
+    elif len(recent) == 200 and vivian_ambient_state._ambient_local_time(channel.guild.id, recent[-1].created_at.timestamp()).date() == today:
         # The day's history was truncated: suppress instead of risking a duplicate after restart.
         state["quiet_day"] = today.isoformat()
     state["history_ready"] = True
@@ -104,6 +107,7 @@ def _ambient_quiet_eligible(state: dict, now: float, moscow_now: datetime) -> bo
 
 
 async def _ambient_check_quiet_channel(channel, now: float, moscow_now: datetime) -> None:
+    await vivian_ambient_state.refresh_configuration(channel.guild)
     if core_discord_api.is_paused() or not vivian_ambient_state._ambient_channel_allowed(channel):
         return
     state = vivian_ambient_state._ambient_state_for(channel.guild.id)
@@ -120,14 +124,17 @@ async def _ambient_check_quiet_channel(channel, now: float, moscow_now: datetime
         return
     if not _ambient_quiet_eligible(state, now, moscow_now):
         return
-    state["quiet_day"] = today.isoformat()
-    state["last_attempt"] = now
     question_index = (today.toordinal() + channel.guild.id) % len(vivian_ambient_state.AMBIENT_DAILY_QUESTIONS)
     content = vivian_ambient_state.AMBIENT_DAILY_QUESTIONS[question_index] + "\n\n" + _ambient_question_marker(today)
     nonce = hashlib.blake2b(
         f"vivian-quiet:{channel.guild.id}:{today.isoformat()}".encode(), digest_size=12,
     ).hexdigest()
     try:
+        if not await vivian_ambient_state._ambient_reserve(channel.guild.id, channel.id, now, today.isoformat(), quiet=True):
+            return
+        state["quiet_day"] = today.isoformat()
+        state["last_attempt"] = now
+        await vivian_ambient_state.refresh_configuration(channel.guild)
         if not core_discord_api.is_paused() and vivian_ambient_state._ambient_channel_allowed(channel):
             sent = await utils_helpers._send_message_once(channel, content, nonce=nonce)
             _ambient_note_question(channel.guild.id, content, sent)

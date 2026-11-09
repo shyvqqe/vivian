@@ -19,6 +19,18 @@ from utils import helpers as utils_helpers
 from app import chat_routing, message_observers
 
 
+async def _life_observer(message):
+    if core_database.db_pool is not None:
+        from app import life
+        await life.observe_message(message)
+
+
+async def _hub_observer(message):
+    if core_database.db_pool is not None:
+        from app import hub
+        await hub.observe_message(message)
+
+
 async def _deliver_chat_turn(message, trigger, reply_target):
     key = (message.guild.id if message.guild else 0, message.channel.id, message.author.id)
     lock = core_state.AI_DIALOGUE_LOCKS.setdefault(key, asyncio.Lock())
@@ -68,6 +80,10 @@ async def on_message(message):
     now = time.time()
     moderation_started = time.monotonic()
     if message.guild is not None:
+        if core_database.db_pool is not None:
+            from app import modsuite
+            if await modsuite.observe_message(message):
+                return
         vivian_ambient_state._ambient_note_arrival(message)
         if await commands_antispam._moderate_message_spam(message, now):
             return
@@ -124,6 +140,8 @@ async def on_message(message):
         operations = (
             ("stats", lambda: core_database._persist_stats_snapshot(*stats_snapshot)),
             ("chat_impact", lambda: vivian_chat_impact.observe_approved_message(message)),
+            ("community_life", lambda: _life_observer(message)),
+            ("community_features", lambda: _hub_observer(message)),
         )
         for label, operation in operations:
             if label == "stats":
@@ -141,7 +159,7 @@ async def on_message(message):
             # conversation preparation; only unrelated observers overlap it.
             await vivian_memory._remember_chat_message(message, directly_addressed=trigger is not None)
         except Exception as error:
-            print(f"[AI Memory] Observer failed; message_id={message.id}; error={error!r}", flush=True)
+            print(f"[AI Memory] Observer failed; message_id={message.id}; error={type(error).__name__}", flush=True)
         memory_ms = (time.monotonic() - memory_started) * 1000
         ambient_started = time.monotonic()
         try:

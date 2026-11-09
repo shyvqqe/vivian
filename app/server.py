@@ -6,6 +6,7 @@ import threading
 from urllib.parse import urlsplit
 
 from core import config as core_config
+from core import hub_store
 
 
 _server_thread: threading.Thread | None = None
@@ -17,7 +18,14 @@ def home():
 
 
 class _KeepAliveHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        path = urlsplit(getattr(self, "path", "")).path[:100]
+        print(f"[Web] {getattr(self, 'command', 'HTTP')} {path!r}", flush=True)
+
     def _respond(self, *, head_only=False):
+        from app import dashboard
+        if dashboard.handle(self, head_only=head_only):
+            return
         path = urlsplit(self.path).path
         content_type = "text/plain; charset=utf-8"
         if path == "/":
@@ -27,6 +35,7 @@ class _KeepAliveHandler(BaseHTTPRequestHandler):
             from app.community import public_status as community_status
             from app.rooms import public_status as room_status
             from core.database import public_status as storage_status
+            from vivian.memory_store import is_ready as memory_is_ready
             ready = core_config.bot.is_ready()
             status = 200 if ready else 503
             content = json.dumps({
@@ -37,6 +46,8 @@ class _KeepAliveHandler(BaseHTTPRequestHandler):
                 "github_updates": public_status(),
                 "community": community_status(),
                 "private_rooms": room_status(),
+                "features_ready": hub_store.is_ready(),
+                "ai_memory_ready": memory_is_ready(),
             })
             content_type = "application/json; charset=utf-8"
         else:
@@ -55,6 +66,16 @@ class _KeepAliveHandler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         self._respond(head_only=True)
+
+    def do_POST(self):
+        from app import dashboard
+        if not dashboard.handle(self):
+            self.send_error(405, "Method not allowed")
+
+    def do_OPTIONS(self):
+        from app import dashboard
+        if not dashboard.handle(self):
+            self.send_error(405, "Method not allowed")
 
 
 def run():

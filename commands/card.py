@@ -162,6 +162,8 @@ class ProfileView(discord.ui.LayoutView):
         async with self.profile.lock:
             if time.monotonic() - self.profile.last_refresh < 8:
                 return await helpers.vivian_reply(interaction, "Карточка только что обновилась. Подожди несколько секунд.", ephemeral=True)
+            if self.profile.png and not _can_upload(interaction):
+                return await helpers.vivian_reply(interaction, "Vivian cannot upload a refreshed image here. Your existing card was kept.", ephemeral=True)
             member = interaction.guild.get_member(self.profile.member.id)
             try:
                 async with asyncio.timeout(5):
@@ -175,14 +177,19 @@ class ProfileView(discord.ui.LayoutView):
             self.profile.last_refresh = time.monotonic()
             data, png = await profile_data.build(member, with_image=_can_upload(interaction))
             profile = self.profile
+            if profile.png and not png:
+                return await helpers.vivian_reply(interaction, "The refreshed image is unavailable. Your existing card was kept; try again shortly.", ephemeral=True)
             previous = profile.data, profile.png, profile.member, profile.image_url
             profile.data, profile.png, profile.member = data, png, member
             try:
-                message = await _publish(interaction, profile, self.tab, self.page)
+                message = await _publish(interaction, profile, self.tab, self.page, preserve_existing=bool(previous[1]))
                 if message is None:
                     profile.data, profile.png, profile.member, profile.image_url = previous
                 else:
                     self.stop()
+            except discord.DiscordException:
+                profile.data, profile.png, profile.member, profile.image_url = previous
+                await helpers.vivian_reply(interaction, "Discord could not refresh this image. Your existing card was kept.", ephemeral=True)
             except BaseException:
                 profile.data, profile.png, profile.member, profile.image_url = previous
                 raise
@@ -236,7 +243,7 @@ def _new_view(profile, tab="card", page=0, *, expired=False):
     return (profile.view_type or ProfileView)(profile, tab, page, expired=expired)
 
 
-async def _publish(interaction, profile, tab="card", page=0):
+async def _publish(interaction, profile, tab="card", page=0, *, preserve_existing=False):
     file = discord.File(BytesIO(profile.png), filename=profile.filename) if profile.png else None
     if file:
         profile.image_url = file.uri
@@ -244,13 +251,17 @@ async def _publish(interaction, profile, tab="card", page=0):
         profile.image_url = None
     view = _new_view(profile, tab, page)
     try:
-        message = await responses.edit_deferred(interaction, view=view, attachments=[file] if file else [])
+        publish = v2.edit_original if preserve_existing else responses.edit_deferred
+        message = await publish(interaction, view=view, attachments=[file] if file else [])
         if message:
             profile.message = message
             profile.current_view = view
-        if message and file:
-            profile.image_url = next((item.url for item in message.attachments if item.filename == profile.filename), file.uri)
+        if not message:
+            view.stop()
         return message
+    except BaseException:
+        view.stop()
+        raise
     finally:
         if file:
             file.close()

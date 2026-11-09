@@ -38,7 +38,10 @@ def filter_fact_candidates(scope, uid, source_id, facts):
 
 
 async def guarded_memory_write(writer, scope, record, facts):
-    async with control_lock(scope):
+    lock = control_lock(scope)
+    async with asyncio.timeout(1.5):
+        await lock.acquire()
+    try:
         if record["message_id"] in PURGED_SOURCE_IDS.get(scope, set()):
             return True  # Retire a stale pending archive job without resurrecting its source.
         from vivian.memory import _ai_memory_fact_candidates
@@ -63,6 +66,8 @@ async def guarded_memory_write(writer, scope, record, facts):
         if not archived:
             _purge_sources(scope, record["author_id"], {record["message_id"]})
         return True
+    finally:
+        lock.release()
 
 
 async def guarded_memory_load(loader, scope):

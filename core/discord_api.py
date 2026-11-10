@@ -1,4 +1,3 @@
-"""Circuit breaker for Discord 429 responses that escape discord.py's retry logic."""
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -78,21 +77,20 @@ async def _retry_after(error: BaseException, body=_BODY_UNREAD) -> float | None:
                 return retry
         except (TypeError, ValueError, OverflowError):
             pass
-    retry = _positive_seconds(_header(headers, "X-RateLimit-Reset-After"))
-    if retry is not None:
-        return retry
     if body is _BODY_UNREAD:
         body = await _cached_json(error)
-    return _positive_seconds(body.get("retry_after")) if isinstance(body, dict) else None
+    retry = _positive_seconds(body.get("retry_after")) if isinstance(body, dict) else None
+    if retry is not None:
+        return retry
+    return _positive_seconds(_header(headers, "X-RateLimit-Reset-After"))
 
 
 def _rate_limit_scope(error: BaseException, body) -> str:
     headers = getattr(getattr(error, "response", None), "headers", {})
-    scope = str(_header(headers, "X-RateLimit-Scope") or "").lower()
-    global_header = str(_header(headers, "X-RateLimit-Global") or "").lower()
+    scope = str(_header(headers, "X-RateLimit-Scope") or "").strip().lower()
+    global_header = str(_header(headers, "X-RateLimit-Global") or "").strip().lower()
     if (scope == "global" or global_header in {"true", "1"}
-            or isinstance(body, dict) and body.get("global") is True
-            or "global rate limit" in str(getattr(error, "text", "")).lower()):
+            or isinstance(body, dict) and body.get("global") is True):
         return "global"
     if scope in {"user", "shared"}:
         return scope
@@ -136,19 +134,28 @@ class _Circuit:
 class DiscordRESTGuard(_Circuit):
     def __init__(self, clock=time.monotonic):
         super().__init__(clock)
-        self._route_guards: OrderedDict[tuple[str, str], _Circuit] = OrderedDict()
+        self._route_guards: OrderedDict[tuple[str, str | None], _Circuit] = OrderedDict()
+
+    def _circuits_for(self, route):
+        yield self, "global"
+        for key in (_route_key(route), (route.key, None)):
+            circuit = self._route_guards.get(key)
+            if circuit is not None:
+                yield circuit, "route"
 
     def is_route_paused(self, route) -> bool:
-        circuit = self._route_guards.get(_route_key(route))
-        return self.is_paused() or circuit is not None and circuit.is_paused()
+        return any(circuit.is_paused() for circuit, _ in self._circuits_for(route))
 
     def route_remaining(self, route) -> float:
-        circuit = self._route_guards.get(_route_key(route))
-        return max(self.remaining(), circuit.remaining() if circuit else 0.0)
+        return max(circuit.remaining() for circuit, _ in self._circuits_for(route))
 
-    def _route_circuit(self, route) -> _Circuit | None:
+    def _route_circuit(self, route) -> _Circuit:
         key = _route_key(route)
+        fallback_key = (route.key, None)
         circuit = self._route_guards.get(key)
+        if circuit is not None:
+            return circuit
+        circuit = self._route_guards.get(fallback_key)
         if circuit is not None:
             return circuit
         if len(self._route_guards) >= MAX_ROUTE_GUARDS:
@@ -156,7 +163,8 @@ class DiscordRESTGuard(_Circuit):
                 if not stale.is_paused():
                     self._route_guards.pop(stale_key, None)
         if len(self._route_guards) >= MAX_ROUTE_GUARDS:
-            return None  # Never evict an actively blocked or probing route.
+            # Share overflow only between requests with the same method and path.
+            key = fallback_key
         circuit = _Circuit(self.clock)
         self._route_guards[key] = circuit
         return circuit
@@ -168,20 +176,16 @@ class DiscordRESTGuard(_Circuit):
             return await original(route, *args, **kwargs)
         probes = []
         try:
-            if self._reserve():
-                probes.append((self, self.failures, "global"))
-            local = self._route_guards.get(_route_key(route))
-            if local is not None and local._reserve():
-                probes.append((local, local.failures, "route"))
+            for circuit, label in self._circuits_for(route):
+                if circuit._reserve():
+                    probes.append((circuit, circuit.failures, label))
             result = await original(route, *args, **kwargs)
         except BaseException as error:
             if is_rate_limit_error(error) and not isinstance(error, DiscordAPIPaused):
                 body = await _cached_json(error)
                 scope = _rate_limit_scope(error, body)
-                target = self if scope in {"global", "unknown"} else self._route_circuit(route)
-                circuit_scope = "global" if target is self or target is None else "route"
-                if target is None:
-                    target = self  # The bounded route map is full of active circuits.
+                target = self if scope == "global" else self._route_circuit(route)
+                circuit_scope = "global" if target is self else "route"
                 target.failures += 1
                 retry = await _retry_after(error, body)
                 source = "server" if retry is not None else "local-backoff"

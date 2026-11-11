@@ -60,6 +60,7 @@ COMMAND_MODULES = [
     "general",
     "help_panel",
     "moderation",
+    "moderation_prefix",
     "music",
     "music_prefix",
     "project",

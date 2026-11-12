@@ -13,6 +13,10 @@ MUSIC_QUEUES = defaultdict(deque)
 MUSIC_NOW_PLAYING = {}
 
 
+# Sanitized last startup error, used to notify the user after slow audio resolution.
+MUSIC_LAST_ERRORS = {}
+
+
 MUSIC_SOURCES = {}
 
 

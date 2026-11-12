@@ -7,6 +7,7 @@ from core import config as core_config
 from commands import activity as commands_activity
 from commands import ai_moderation as commands_ai_moderation
 from commands import antispam as commands_antispam
+from commands import video_auto as commands_video_auto
 from core import database as core_database
 from core import signal as core_signal
 from core import state as core_state
@@ -24,7 +25,7 @@ from app import chat_routing, message_observers
 # adds latency without providing any useful conversational context.
 _FAST_PREFIX_COMMANDS = frozenset({
     "play", "stop", "skip", "pause", "resume", "volume", "loop", "queue",
-    "mute", "unmute", "ban", "kick", "warn",
+    "mute", "unmute", "ban", "kick", "warn", "download", "dl", "video",
 })
 
 
@@ -188,6 +189,13 @@ async def on_message(message):
         if fast_context is not None:
             await core_config.bot.invoke(fast_context)
             return
+        # Public-video links get an opt-in button menu before AI dialogue.
+        # Anti-spam, modsuite and AI moderation already approved the message.
+        try:
+            if await commands_video_auto.maybe_offer_download(message):
+                return
+        except Exception as exc:
+            print(f"[VideoAuto] observer failed ({type(exc).__name__})", flush=True)
         trigger, reply_target = await chat_routing.select_turn(message)
         memory_started = time.monotonic()
         try:

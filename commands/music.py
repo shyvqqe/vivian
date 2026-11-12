@@ -36,11 +36,18 @@ async def play(interaction: discord.Interaction, query: str):
         return await utils_command_responses.edit_deferred(
             interaction, embed=utils_helpers.vivian_embed("Сначала зайди в голосовой канал.", error=True))
     try:
+        await commands_music_audio._ensure_ffmpeg()
+    except commands_music_audio.ffmpeg_runtime.FFmpegUnavailable as error:
+        return await utils_command_responses.edit_deferred(
+            interaction, embed=utils_helpers.vivian_embed(str(error), error=True))
+    try:
         tracks = await commands_music_audio._extract_in_executor(commands_music_links.find_tracks, query, 1)
         if not tracks:
             return await utils_command_responses.edit_deferred(
-                interaction, embed=utils_helpers.vivian_embed("По этому запросу ничего не найдено.", error=True))
-        ok, notice = await commands_music_audio._queue_music_tracks(interaction.guild, member, tracks)
+                interaction, embed=utils_helpers.vivian_embed("По запросу ничего не найдено. Попробуй указать исполнителя и название или вставь прямую ссылку на YouTube.", error=True))
+        ok, notice = await commands_music_audio._queue_music_tracks(
+            interaction.guild, member, tracks, quick_response=True, notify_channel=interaction.channel,
+        )
     except (ValueError, commands_music_relay.RelayError) as error:
         return await utils_command_responses.edit_deferred(
             interaction, embed=utils_helpers.vivian_embed(str(error), error=True))

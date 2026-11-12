@@ -63,6 +63,7 @@ COMMAND_MODULES = [
     "moderation_prefix",
     "music",
     "music_prefix",
+    "video_download",
     "project",
     "quests",
     "rank",

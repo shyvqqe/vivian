@@ -2,7 +2,6 @@ from __future__ import annotations
 import asyncio
 import discord
 import random
-import shutil
 import subprocess
 import time
 from core import config as core_config
@@ -10,6 +9,7 @@ from commands import music_panels as commands_music_panels
 from commands import music_search as commands_music_search
 from commands import music_relay as commands_music_relay
 from core import music_state as core_music_state
+from utils import ffmpeg_runtime
 
 
 def _append_music_tracks(guild_id: int, tracks: list[dict]) -> None:
@@ -21,7 +21,10 @@ def _append_music_tracks(guild_id: int, tracks: list[dict]) -> None:
         core_music_state.MUSIC_QUEUES[guild_id].extend(shuffled)
 
 
-async def _queue_music_tracks(guild: discord.Guild | None, member: discord.Member, tracks: list[dict]) -> tuple[bool, str]:
+async def _queue_music_tracks(
+    guild: discord.Guild | None, member: discord.Member, tracks: list[dict], *,
+    quick_response: bool = False, notify_channel=None,
+) -> tuple[bool, str]:
     if guild is None:
         return False, "Музыка доступна только на сервере."
     voice_state = getattr(member, "voice", None)
@@ -30,6 +33,12 @@ async def _queue_music_tracks(guild: discord.Guild | None, member: discord.Membe
         return False, "Сначала зайди в голосовой канал."
     if not tracks:
         return False, "Выбери хотя бы один трек."
+    # Check FFmpeg *before* joining voice. A missing binary must not cause a
+    # connect -> playback failure -> disconnect loop.
+    try:
+        await _ensure_ffmpeg()
+    except ffmpeg_runtime.FFmpegUnavailable as error:
+        return False, str(error)
 
     bot_member = guild.me
     if bot_member is not None:
@@ -71,8 +80,24 @@ async def _queue_music_tracks(guild: discord.Guild | None, member: discord.Membe
         return False, f"Не удалось подключиться к голосовому каналу: {type(error).__name__}."
 
     if not was_active:
-        if not await _play_next_track(guild_id):
-            return False, "Не удалось начать воспроизведение. Проверь yt-dlp, ffmpeg и доступ к источнику."
+        core_music_state.MUSIC_LAST_ERRORS.pop(guild_id, None)
+        # yt-dlp audio extraction can take many seconds even when metadata is
+        # found instantly. Confirm the queued track quickly and finish startup
+        # independently; never cancel the active startup task on timeout.
+        starter = asyncio.create_task(_play_next_track(guild_id))
+        if quick_response:
+            try:
+                started = await asyncio.wait_for(asyncio.shield(starter), timeout=2.5)
+            except asyncio.TimeoutError:
+                generation = core_music_state.MUSIC_GENERATION[guild_id]
+                asyncio.create_task(_report_delayed_start(guild, starter, generation, notify_channel))
+                return True, "Трек найден и добавлен. Загружаю аудио — запуск может занять несколько секунд."
+        else:
+            started = await starter
+        if not started:
+            return False, core_music_state.MUSIC_LAST_ERRORS.get(
+                guild_id, "Не удалось начать воспроизведение. Проверь yt-dlp, FFmpeg и доступ к YouTube."
+            )
         first_title = tracks[0].get("title", "трек")
         queued_after = len(tracks) - 1
         message = f"Запущено: **{first_title}**."
@@ -84,12 +109,41 @@ async def _queue_music_tracks(guild: discord.Guild | None, member: discord.Membe
     return True, f"В очередь добавлено треков: {len(tracks)}."
 
 
+async def _report_delayed_start(guild, starter: asyncio.Task, generation: int, channel) -> None:
+    """Report real startup errors instead of leaving `/play` at 'loading'."""
+    try:
+        started = await starter
+    except asyncio.CancelledError:
+        return
+    except Exception as error:
+        print(f"[Music] Delayed playback startup failed ({type(error).__name__})", flush=True)
+        started = False
+    if started or generation != core_music_state.MUSIC_GENERATION[guild.id]:
+        return
+    voice = guild.voice_client
+    if voice and (voice.is_playing() or voice.is_paused()):
+        return
+    if channel is None:
+        return
+    reason = core_music_state.MUSIC_LAST_ERRORS.get(
+        guild.id, "Не удалось запустить трек. Проверь доступ к YouTube и FFmpeg."
+    )
+    try:
+        await channel.send(
+            f"Не удалось запустить музыку: {reason}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except discord.DiscordException:
+        pass
+
+
 async def _ensure_ffmpeg() -> str:
     if core_music_state.FFMPEG_EXECUTABLE is None:
-        ffmpeg_path = shutil.which("ffmpeg")
-        if not ffmpeg_path:
-            raise RuntimeError("ffmpeg не установлен в образе Render.")
+        # Even if there is no system package, imageio-ffmpeg bundles a usable
+        # binary on the supported platforms.
+        ffmpeg_path = await asyncio.to_thread(ffmpeg_runtime.find_ffmpeg)
         core_music_state.FFMPEG_EXECUTABLE = ffmpeg_path
+        print(f"[Music] FFmpeg available: {ffmpeg_path}", flush=True)
     return core_music_state.FFMPEG_EXECUTABLE
 
 
@@ -116,6 +170,7 @@ def _reset_music_session(guild_id: int) -> int:
         state.pop(guild_id, None)
     core_music_state.MUSIC_STARTING.discard(guild_id)
     core_music_state.MUSIC_SKIP_PENDING.discard(guild_id)
+    core_music_state.MUSIC_LAST_ERRORS.pop(guild_id, None)
     core_music_state.MUSIC_TRACK_ELAPSED[guild_id] = 0.0
     core_music_state.loop_status[guild_id] = False
     recovery = core_music_state.MUSIC_RECOVERY_TASKS.pop(guild_id, None)
@@ -130,6 +185,9 @@ def _member_channel(member):
 
 async def replace_current_track(guild, voice_channel, track: dict, *, requester=None,
                                 expected_generation: int | None = None) -> bool:
+    # Prefix commands also use this path: do not connect to Discord if FFmpeg
+    # cannot start. Callers can show the precise installation error.
+    await _ensure_ffmpeg()
     async with _music_connect_lock(guild.id):
         if expected_generation is not None and core_music_state.MUSIC_GENERATION[guild.id] != expected_generation:
             return False
@@ -294,6 +352,13 @@ async def _play_next_track(guild_id: int, *, requester=None):
         voice = guild.voice_client if guild else None
         if voice is None or not voice.is_connected():
             return False
+        try:
+            ffmpeg_path = await _ensure_ffmpeg()
+        except ffmpeg_runtime.FFmpegUnavailable as error:
+            # Preserve queued tracks and avoid a retry/disconnect loop when
+            # this session was started through an older or external entrypoint.
+            core_music_state.MUSIC_LAST_ERRORS[guild_id] = str(error)
+            return False
 
         if core_music_state.loop_status[guild_id] and guild_id in core_music_state.MUSIC_NOW_PLAYING:
             track = core_music_state.MUSIC_NOW_PLAYING[guild_id]
@@ -324,7 +389,6 @@ async def _play_next_track(guild_id: int, *, requester=None):
         fresh_track = dict(track)
         fresh_track.update({key: resolved[key] for key in ("stream_url", "relay_query", "source", "backend")})
         fresh_track["_veyr_retry_count"] = track.get("_veyr_retry_count", 0)
-        ffmpeg_path = await _ensure_ffmpeg()
         if (generation != core_music_state.MUSIC_GENERATION[guild_id]
                 or guild.voice_client is not voice or not voice.is_connected()):
             return False
@@ -354,6 +418,7 @@ async def _play_next_track(guild_id: int, *, requester=None):
 
         voice.play(source, after=after_playback)
         playback_started = True
+        core_music_state.MUSIC_LAST_ERRORS.pop(guild_id, None)
         # A short/failed stream may end while the panel awaits its HTTP edit.
         core_music_state.MUSIC_STARTING_GENERATIONS.pop(guild_id, None)
         core_music_state.MUSIC_STARTING.discard(guild_id)
@@ -370,6 +435,18 @@ async def _play_next_track(guild_id: int, *, requester=None):
             print(f"[Музыка] Панель не обновилась на сервере {guild_id}: {type(error).__name__}")
             return True
         print(f"[Музыка] Не удалось воспроизвести трек на сервере {guild_id}: {type(error).__name__}")
+        if isinstance(error, commands_music_relay.RelayError):
+            core_music_state.MUSIC_LAST_ERRORS[guild_id] = str(error)
+        elif isinstance(error, ffmpeg_runtime.FFmpegUnavailable):
+            core_music_state.MUSIC_LAST_ERRORS[guild_id] = str(error)
+        elif "ffmpeg" in str(error).lower():
+            core_music_state.MUSIC_LAST_ERRORS[guild_id] = (
+                "FFmpeg найден, но запуск аудио не удался. Проверь настройки сервера и журнал FFmpeg."
+            )
+        else:
+            core_music_state.MUSIC_LAST_ERRORS[guild_id] = (
+                "Ошибка запуска аудио. Проверь доступ к YouTube, yt-dlp и права бота в голосовом канале."
+            )
         if source is not None and not voice.is_playing() and not voice.is_paused():
             source.cleanup()
         core_music_state.MUSIC_NOW_PLAYING.pop(guild_id, None)

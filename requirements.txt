@@ -9,3 +9,5 @@ tzdata; sys_platform == "win32"
 psycopg[binary,pool]>=3.2.3
 Pillow>=11.0.0
 yt-dlp[default]
+yt-dlp-ejs
+imageio-ffmpeg>=0.5.2,<1

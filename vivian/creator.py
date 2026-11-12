@@ -7,7 +7,7 @@ import discord
 from core import config as core_config
 
 
-CREATOR_NAME = "zev1x"
+CREATOR_NAME = "shyvae"
 CREATOR_DESCRIPTION = (
     "Он собрал меня для своего Discord-сервера: хотелось не только команд, "
     "но и собеседницу со своим характером. Так появилась Vivian."
@@ -68,7 +68,7 @@ async def _creator_reply_payload(message):
     if member is None:
         return CREATOR_FALLBACK, None
     embed = discord.Embed(
-        title="Мой создатель — zev1x",
+        title="Мой создатель — shyvae",
         description=f"{member.mention}\n\n{CREATOR_DESCRIPTION}",
         color=core_config.VIVIAN_ACCENT,
     )

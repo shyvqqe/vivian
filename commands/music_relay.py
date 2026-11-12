@@ -7,6 +7,7 @@ always runs in a worker thread via commands.music_audio._extract_in_executor.
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 import time
 import logging
@@ -23,7 +24,7 @@ from urllib.request import Request, urlopen
 log = logging.getLogger(__name__)
 
 # Deployment fingerprint: proves Render imported this version, not old relay-only code.
-print("[Music backend] HOTFIX-2026-10-17-v2 loaded; local yt-dlp fallback enabled", flush=True)
+print("[Music backend] PLAYFIX-2026-11-11: fast search, bounded fallback", flush=True)
 
 
 class RelayError(RuntimeError):
@@ -33,6 +34,11 @@ class RelayError(RuntimeError):
 _YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com", "youtu.be", "www.youtu.be"}
 _SOUNDCLOUD_HOSTS = {"soundcloud.com", "www.soundcloud.com", "m.soundcloud.com", "on.soundcloud.com"}
 _MAX_RESPONSE_BYTES = 512 * 1024
+_YOUTUBE_PUBLIC_MAX_BYTES = 2 * 1024 * 1024
+_QUICK_SEARCH_TIMEOUT = 4
+_RELAY_SEARCH_TIMEOUT = 7
+_LOCAL_SEARCH_TIMEOUT = 12
+_AUDIO_RESOLVE_TIMEOUT = 22
 
 
 def _normalise_music_source(source: str | None = None) -> str:
@@ -128,7 +134,11 @@ def _yt_dlp_options() -> list[str]:
 
 
 def _run_ytdlp(args: list[str], timeout: int) -> bytes:
-    command = ["yt-dlp", *_yt_dlp_options(), "--no-warnings", "--quiet", *args]
+    command = [
+        "yt-dlp", *_yt_dlp_options(), "--no-warnings", "--quiet",
+        "--socket-timeout", "5", "--retries", "1", "--extractor-retries", "1",
+        *args,
+    ]
     try:
         process = subprocess.run(
             command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
@@ -212,6 +222,131 @@ def _normalise_tracks(entries: list, source: str, limit: int, backend: str) -> l
     return tracks
 
 
+def _youtube_renderer_items(value, *, budget: int = 5000):
+    """Visit the public YouTube search response without assuming a fixed layout."""
+    stack = [value]
+    while stack and budget:
+        budget -= 1
+        node = stack.pop()
+        if isinstance(node, dict):
+            video = node.get("videoRenderer")
+            if isinstance(video, dict):
+                yield video
+                continue
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(reversed(node))
+
+
+def _youtube_text(value) -> str:
+    if not isinstance(value, dict):
+        return ""
+    runs = value.get("runs")
+    if isinstance(runs, list):
+        return "".join(str(part.get("text", "")) for part in runs if isinstance(part, dict)).strip()
+    return str(value.get("simpleText") or "").strip()
+
+
+def _youtube_duration(value) -> int | None:
+    text = _youtube_text(value)
+    parts = text.split(":")
+    if not 1 < len(parts) <= 3 or not all(part.isascii() and part.isdigit() for part in parts):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds if seconds > 0 else None
+
+
+def _public_youtube_search(query: str, limit: int) -> list[dict]:
+    """Fast, unauthenticated metadata lookup. yt-dlp remains the audio extractor.
+
+    YouTube can change/block this endpoint; failures fall back to the supported
+    yt-dlp backend. No user cookie, account token, or protected stream is used.
+    """
+    query = _validated_music_query(query)
+    if urlsplit(query).scheme or _source_for_query(query, "youtube") != "youtube":
+        return []
+    payload = {
+        "context": {"client": {"clientName": "WEB", "clientVersion": "2.20241126.01.00",
+                               "hl": "ru", "gl": "US"}},
+        "query": query,
+    }
+    request = Request(
+        "https://www.youtube.com/youtubei/v1/search?prettyPrint=false",
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"User-Agent": "Mozilla/5.0", "Content-Type": "application/json",
+                 "Accept": "application/json", "Origin": "https://www.youtube.com"},
+        method="POST",
+    )
+    with urlopen(request, timeout=_QUICK_SEARCH_TIMEOUT) as response:
+        if "json" not in response.headers.get("Content-Type", "").lower():
+            return []
+        raw = response.read(_YOUTUBE_PUBLIC_MAX_BYTES + 1)
+    if len(raw) > _YOUTUBE_PUBLIC_MAX_BYTES:
+        return []
+    data = json.loads(raw)
+    candidates = []
+    seen = set()
+    for item in _youtube_renderer_items(data):
+        video_id = item.get("videoId")
+        if (not isinstance(video_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id)
+                or video_id in seen):
+            continue
+        title = _youtube_text(item.get("title"))
+        if not title:
+            continue
+        seen.add(video_id)
+        thumbnail = None
+        thumbs = (item.get("thumbnail") or {}).get("thumbnails") or []
+        if isinstance(thumbs, list):
+            for thumb in reversed(thumbs):
+                if isinstance(thumb, dict) and str(thumb.get("url", "")).startswith("https://"):
+                    thumbnail = thumb["url"]
+                    break
+        entry = {
+            "id": video_id,
+            "title": title,
+            "channel": _youtube_text(item.get("ownerText")),
+            "duration": _youtube_duration(item.get("lengthText")),
+            "thumbnail": thumbnail,
+        }
+        candidates.append(entry)
+        if len(candidates) >= limit:
+            break
+    return _normalise_tracks(candidates, "youtube", limit, "local")
+
+
+def _direct_link_track(query: str, source: str) -> dict | None:
+    """Queue supported direct *track* URLs without a redundant network search."""
+    parsed = urlsplit(query)
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    host = (parsed.hostname or "").lower()
+    if source == "youtube":
+        video_id = None
+        if host in {"youtu.be", "www.youtu.be"}:
+            video_id = parsed.path.strip("/").split("/")[0]
+        elif parsed.path == "/watch":
+            video_id = parse_qs(parsed.query).get("v", [None])[0]
+        elif parsed.path.startswith(("/shorts/", "/live/")):
+            video_id = parsed.path.split("/")[2]
+        if not isinstance(video_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
+            return None
+        return {
+            "title": "YouTube видео", "webpage_url": "https://www.youtube.com/watch?v=" + video_id,
+            "artist": "", "duration": None, "source": "YouTube", "thumbnail": None,
+            "backend": "local", "relay_query": "https://www.youtube.com/watch?v=" + video_id,
+        }
+    if source == "soundcloud" and host in _SOUNDCLOUD_HOSTS:
+        if len([part for part in parsed.path.split("/") if part]) < 2:
+            return None
+        return {"title": "SoundCloud трек", "webpage_url": query, "artist": "",
+                "duration": None, "source": "SoundCloud", "thumbnail": None,
+                "backend": "local", "relay_query": query}
+    return None
+
+
 def _local_search(query: str, source: str = "youtube", limit: int = 10) -> list[dict]:
     query = _validated_music_query(query)
     source = _source_for_query(query, source)
@@ -221,7 +356,7 @@ def _local_search(query: str, source: str = "youtube", limit: int = 10) -> list[
     stdout = _run_ytdlp([
         "--dump-single-json", "--skip-download", "--flat-playlist", "--playlist-end", str(limit),
         "--", target,
-    ], timeout=30)
+    ], timeout=_LOCAL_SEARCH_TIMEOUT)
     if len(stdout) > _MAX_RESPONSE_BYTES:
         raise RelayError("Источник вернул слишком большой ответ.")
     try:
@@ -238,10 +373,24 @@ def _relay_search_uncached(query: str, source: str, limit: int = 10) -> list[dic
     query = _validated_music_query(query)
     source = _source_for_query(query, source)
     limit = min(max(int(limit), 1), 10)
+    # Direct track URLs already identify the recording; a search would add
+    # latency and sometimes fail due to YouTube blocking search specifically.
+    direct = _direct_link_track(query, source)
+    if direct:
+        return [direct]
+    # Try a short public metadata search before spawning yt-dlp. Never send
+    # SoundCloud queries to the YouTube endpoint.
+    if source == "youtube" and urlsplit(query).scheme not in {"http", "https"}:
+        try:
+            fast_tracks = _public_youtube_search(query, limit)
+            if fast_tracks:
+                return fast_tracks
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, UnicodeError, TypeError) as error:
+            log.info("Fast YouTube metadata lookup unavailable (%s)", type(error).__name__)
     if _relay_credentials() is not None:
         try:
             request = Request(_relay_url("search", query, source, limit), headers={"Accept": "application/json"})
-            with urlopen(request, timeout=25) as response:
+            with urlopen(request, timeout=_RELAY_SEARCH_TIMEOUT) as response:
                 raw = response.read(_MAX_RESPONSE_BYTES + 1)
             if len(raw) > _MAX_RESPONSE_BYTES:
                 raise RelayError("Relay вернул слишком большой ответ.")
@@ -268,7 +417,11 @@ def _relay_search(query: str, source: str, limit: int = 10) -> list[dict]:
     source = _source_for_query(query, source)
     limit = min(max(int(limit), 1), 10)
     # 90s time buckets avoid serving stale catalog results for long periods.
-    return [dict(track) for track in _cached_music_search(query, source, limit, int(time.monotonic() // 90))]
+    tracks = [dict(track) for track in _cached_music_search(query, source, limit, int(time.monotonic() // 90))]
+    if not tracks:
+        # A transient empty result must not be kept for the whole cache window.
+        _cached_music_search.cache_clear()
+    return tracks
 
 
 def _local_audio_url(query: str, source: str) -> str:
@@ -276,7 +429,7 @@ def _local_audio_url(query: str, source: str) -> str:
     source = _source_for_query(query, source)
     is_url = urlsplit(query).scheme in {"http", "https"}
     target = query if is_url else ("scsearch1:" if source == "soundcloud" else "ytsearch1:") + query
-    raw = _run_ytdlp(["--format", "bestaudio/best", "--get-url", "--playlist-end", "1", "--", target], timeout=35)
+    raw = _run_ytdlp(["--format", "bestaudio/best", "--get-url", "--playlist-end", "1", "--", target], timeout=_AUDIO_RESOLVE_TIMEOUT)
     # yt-dlp returns a short-lived media URL; only use its first valid line.
     for line in raw.decode("utf-8", errors="replace").splitlines():
         if line.startswith(("https://", "http://")):

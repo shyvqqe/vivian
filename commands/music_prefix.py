@@ -90,6 +90,10 @@ async def _start(ctx, query, source, *, fallback_source=None, keep_channel=False
         return PlaybackResult(False, "сначала зайди в голосовой")
     if ctx.guild is None:
         return PlaybackResult(False, "Музыка доступна только на сервере.")
+    try:
+        await music_audio._ensure_ffmpeg()
+    except music_audio.ffmpeg_runtime.FFmpegUnavailable as error:
+        return PlaybackResult(False, str(error))
     if ctx.guild.me is not None:
         permissions = channel.permissions_for(ctx.guild.me)
         if not permissions.connect or not permissions.speak:

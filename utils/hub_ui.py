@@ -5,6 +5,7 @@ import asyncio
 import discord
 
 from core import config, hub_store
+from utils import components_v2 as v2
 
 
 def safe(value, limit=1000):
@@ -40,10 +41,10 @@ async def send(interaction, text=None, *, embed=None, view=None, ephemeral=True)
     if view is not None:
         payload["view"] = view
     if not interaction.response.is_done():
-        return await interaction.response.send_message(**payload, ephemeral=ephemeral)
+        return await v2.send_response(interaction, **payload, ephemeral=ephemeral)
     if interaction.response.type is discord.InteractionResponseType.deferred_channel_message:
-        return await interaction.edit_original_response(**payload)
-    return await interaction.followup.send(**payload, ephemeral=ephemeral)
+        return await v2.edit_original(interaction, **payload)
+    return await v2.followup(interaction, **payload, ephemeral=ephemeral)
 
 
 async def error(interaction, exception):

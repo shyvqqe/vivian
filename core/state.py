@@ -1,6 +1,5 @@
 from __future__ import annotations
-from collections import defaultdict
-from collections import deque
+from collections import OrderedDict, defaultdict, deque
 import time
 from weakref import WeakValueDictionary
 
@@ -46,7 +45,7 @@ XP_COOLDOWN_SECONDS = 60
 reaction_roles = {}
 
 
-chat_history = {}
+chat_history = OrderedDict()
 
 
 MAX_HISTORY = 120

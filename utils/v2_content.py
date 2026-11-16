@@ -29,25 +29,40 @@ def _existing_card(message):
 def card(spec, *, body_blocks=4):
     if spec.get("message") is not None:
         return _existing_card(spec["message"])
-    embed = spec.get("embed")
+    embeds = spec.get("embeds") or (spec.get("embed"),)
     content = spec.get("content") or ""
-    header, body, footer, image, thumbnail = "", content, "", None, None
+    header, footer, thumbnail = "", "", None
+    images = []
     sections = [content] if content else []
     accent = 0xD58BFF
-    if embed is not None:
+    for index, embed in enumerate(item for item in embeds if item is not None):
         author = getattr(embed.author, "name", None)
         title = embed.title or ""
-        header = "\n".join(part for part in (
+        heading = "\n".join(part for part in (
             f"-# {author}" if author else "", f"## {title}" if title else "",
         ) if part)
         fields = [f"**{field.name}**\n{field.value}" for field in embed.fields]
-        body = "\n\n".join(part for part in (content, embed.description, *fields) if part)
-        sections = [part for part in (content, embed.description, *fields) if part]
-        footer = getattr(embed.footer, "text", None) or ""
+        note = getattr(embed.footer, "text", None) or ""
         image = _url(embed.image.url)
-        thumbnail = _url(embed.thumbnail.url) or _url(getattr(embed.author, "icon_url", None))
-        if embed.color is not None:
-            accent = embed.color.value
+        if image and image not in images:
+            images.append(image)
+        if index == 0:
+            header = heading
+            thumbnail = _url(embed.thumbnail.url) or _url(getattr(embed.author, "icon_url", None))
+            if embed.color is not None:
+                accent = embed.color.value
+            sections.extend(part for part in (embed.description, *fields) if part)
+            footer = note
+        else:
+            if index == 1 and footer:
+                sections.append(f"-# {footer}")
+                footer = ""
+            block = "\n\n".join(part for part in (
+                heading, embed.description, *fields, f"-# {note}" if note else "",
+            ) if part)
+            if block:
+                sections.append(block)
+    body = "\n\n".join(sections)
     if not header and not body:
         body = "Панель закрыта."
         sections = [body]
@@ -78,8 +93,8 @@ def card(spec, *, body_blocks=4):
         size = max(1, (len(sections) + count - 1) // count)
         items.extend(discord.ui.TextDisplay("\n\n".join(sections[index:index + size]))
                      for index in range(0, len(sections), size))
-    if image:
-        items.append(discord.ui.MediaGallery(discord.MediaGalleryItem(image)))
+    if images:
+        items.append(discord.ui.MediaGallery(*(discord.MediaGalleryItem(image) for image in images[:10])))
     if extra is not None:
         items.append(discord.ui.File(f"attachment://{OVERFLOW_NAME}"))
     if footer:

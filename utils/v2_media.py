@@ -108,3 +108,22 @@ def normalize(layout, attachments, *, message=None, source=None) -> None:
             _replace_children(parent, children)
 
     visit(layout)
+
+
+def expose_files(layout, attachments) -> None:
+    """Make uploads accessible in V2, where a bare attachment is hidden."""
+    referenced = set()
+    for component in layout.walk_children():
+        if isinstance(component, discord.ui.MediaGallery):
+            referenced.update(item.media.url for item in component.items)
+        elif isinstance(component, (discord.ui.File, discord.ui.Thumbnail)):
+            referenced.add(component.media.url)
+    for attachment in attachments:
+        name = getattr(attachment, "filename", None)
+        if not name:
+            continue
+        url = _PREFIX + name
+        cdn = getattr(attachment, "url", None)
+        if url not in referenced and cdn not in referenced:
+            layout.add_item(discord.ui.File(url, spoiler=name.startswith("SPOILER_")))
+            referenced.add(url)

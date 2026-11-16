@@ -9,6 +9,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock
 
+import discord
+
+from utils import components_v2 as v2
+
 
 SOURCE = Path(__file__).resolve().parents[1] / "commands" / "music_audio.py"
 FUNCTIONS = {"_queue_music_tracks", "_report_delayed_start"}
@@ -32,7 +36,7 @@ class AsyncPlaybackTests(unittest.IsolatedAsyncioTestCase):
         voice = SimpleNamespace(channel=voice_channel, is_connected=lambda: True,
                                 is_playing=lambda: False, is_paused=lambda: False)
         guild = SimpleNamespace(id=guild_id, me=None, voice_client=voice)
-        report_channel = SimpleNamespace(send=AsyncMock())
+        report_channel = SimpleNamespace(send=AsyncMock(return_value=None))
         state = SimpleNamespace(
             MUSIC_QUEUES=defaultdict(deque), MUSIC_SHUFFLE_MODE=defaultdict(bool),
             MUSIC_CONNECT_LOCKS={}, MUSIC_STARTING=set(), MUSIC_RECOVERY_TASKS={},
@@ -56,8 +60,7 @@ class AsyncPlaybackTests(unittest.IsolatedAsyncioTestCase):
             "_music_connect_lock": lambda _: local_lock, "_play_next_track": slow_audio,
             "_ensure_ffmpeg": AsyncMock(return_value="/usr/bin/ffmpeg"),
             "ffmpeg_runtime": SimpleNamespace(FFmpegUnavailable=RuntimeError),
-            "discord": SimpleNamespace(AllowedMentions=SimpleNamespace(none=lambda: None),
-                                       DiscordException=Exception),
+            "discord": discord, "v2": v2,
         })
         ok, message = await ns["_queue_music_tracks"](
             guild, member, [{"title": "Test Song"}], quick_response=True, notify_channel=report_channel,
@@ -67,7 +70,10 @@ class AsyncPlaybackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(state.MUSIC_QUEUES[guild_id]), 1)
         await asyncio.sleep(0.25)  # audio startup completes independently
         report_channel.send.assert_awaited_once()
-        self.assertIn("yt-dlp не вернул", report_channel.send.await_args.args[0])
+        view = report_channel.send.await_args.kwargs["view"]
+        self.assertTrue(view.has_components_v2())
+        self.assertTrue(any("yt-dlp не вернул" in item.content for item in view.walk_children()
+                            if isinstance(item, discord.ui.TextDisplay)))
 
     async def test_missing_ffmpeg_does_not_connect_to_voice(self):
         voice_channel = SimpleNamespace(connect=AsyncMock())
@@ -94,8 +100,7 @@ class AsyncPlaybackTests(unittest.IsolatedAsyncioTestCase):
         channel = SimpleNamespace(send=AsyncMock())
         ns = _isolated_functions({
             "asyncio": asyncio, "core_music_state": state,
-            "discord": SimpleNamespace(AllowedMentions=SimpleNamespace(none=lambda: None),
-                                       DiscordException=Exception),
+            "discord": discord, "v2": v2,
         })
         done = asyncio.create_task(asyncio.sleep(0, result=False))
         await ns["_report_delayed_start"](guild, done, 1, channel)

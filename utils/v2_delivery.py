@@ -6,7 +6,7 @@ from weakref import WeakValueDictionary
 
 import discord
 
-from utils.v2_layout import ControllerView, PanelLayout
+from utils.v2_layout import PanelLayout
 
 
 _locks = WeakValueDictionary()
@@ -52,8 +52,8 @@ def commit(payload, layout, result, *, previous=None, message=None, state=None, 
     if actual is None:
         return result
     state = state or getattr(actual, "_state", None)
-    source = payload.get("view")
-    if isinstance(source, ControllerView):
+    source = layout.controller if isinstance(layout, PanelLayout) else None
+    if source is not None:
         source._v2_layout = layout
         source._v2_spec = dict(layout.spec)
         source.panel_message = actual

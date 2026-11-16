@@ -4,9 +4,13 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
+import discord
+
+from commands import video_download
 from utils import video_downloader as mod
 
 
@@ -144,6 +148,48 @@ class VideoDownloadTests(unittest.IsolatedAsyncioTestCase):
             with mock.patch.object(mod.asyncio, "create_subprocess_exec", new=fake_exec):
                 with self.assertRaisesRegex(mod.DownloadError, "аккаунт"):
                     await mod._run_download(mod.VideoRequest("https://youtu.be/dQw4w9WgXcQ", "YouTube"), path, 1000, 480)
+
+
+class VideoCommandDeliveryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_slash_upload_is_one_public_v2_file_with_a_private_status_link(self):
+        data = b"sample-mp4"
+        output_path = None
+        jump_url = "https://discord.com/channels/1/2/3"
+
+        async def fetch(_url, directory, _limit, *, quality):
+            nonlocal output_path
+            self.assertEqual(quality, 480)
+            output_path = directory / "test.mp4"
+            output_path.write_bytes(data)
+            return SimpleNamespace(path=output_path, filename="test.mp4", platform="YouTube", size=len(data))
+
+        async def publish(**payload):
+            self.assertNotIn("content", payload)
+            self.assertEqual(payload["nonce"], "vd:42")
+            view = payload["view"]
+            self.assertTrue(view.has_components_v2())
+            self.assertEqual(
+                [item.media.url for item in view.walk_children() if isinstance(item, discord.ui.File)],
+                ["attachment://test.mp4"],
+            )
+            self.assertEqual(payload["files"][0].fp.read(), data)
+            return SimpleNamespace(jump_url=jump_url)
+
+        channel = SimpleNamespace(send=mock.AsyncMock(side_effect=publish))
+        interaction = SimpleNamespace(
+            id=42, channel=channel, filesize_limit=5 * mod.MIB,
+            app_permissions=discord.Permissions(send_messages=True, attach_files=True),
+        )
+        responses = video_download.command_responses
+        with (mock.patch.object(mod, "fetch_video", side_effect=fetch),
+              mock.patch.object(responses, "defer_command", new=mock.AsyncMock(return_value=True)) as defer,
+              mock.patch.object(responses, "finish_deferred", new=mock.AsyncMock()) as finish):
+            await video_download.download_video_slash.callback(interaction, "https://youtu.be/dQw4w9WgXcQ")
+        defer.assert_awaited_once_with(interaction, ephemeral=True)
+        channel.send.assert_awaited_once()
+        finish.assert_awaited_once_with(interaction, f"[Перейти к видео]({jump_url})")
+        self.assertIsNotNone(output_path)
+        self.assertFalse(output_path.exists())
 
 
 if __name__ == "__main__":

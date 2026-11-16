@@ -4,6 +4,7 @@ from core import config as core_config
 from utils import command_responses
 from utils import animated_responses, components_v2 as v2
 from utils import delivery_state as utils_delivery_state
+from utils import v2_delivery
 
 
 def vivian_brand(embed: discord.Embed, author: str = "◆ Vivian // SYSTEM") -> discord.Embed:
@@ -67,6 +68,8 @@ async def _send_message_once(
     reference=None,
     embed: discord.Embed | None = None,
     view: discord.ui.View | None = None,
+    *,
+    components_v2: bool = False,
 ):
     route = discord.http.Route(
         "POST",
@@ -78,10 +81,6 @@ async def _send_message_once(
         "enforce_nonce": True,
         "allowed_mentions": {"parse": [], "replied_user": False},
     }
-    if content is not None:
-        payload["content"] = content
-    if embed is not None:
-        payload["embeds"] = [embed.to_dict()]
     if reference is not None:
         guild = getattr(channel, "guild", None)
         member = getattr(guild, "me", None)
@@ -91,16 +90,41 @@ async def _send_message_once(
             payload["message_reference"] = {
                 "type": 0, "message_id": str(reference.id), "fail_if_not_exists": False,
             }
-    if view is not None:
-        payload["components"] = view.to_components()
-    sent = await core_config.bot.http.request(route, json=payload)
-    if view is not None:
+    if components_v2:
+        source = {"content": content, "embed": embed, "view": view}
+        prepared = v2.adapt(source)
+        layout = prepared["view"]
+        with discord.http.handle_message_parameters(
+            view=layout,
+            nonce=str(nonce),
+            allowed_mentions=prepared["allowed_mentions"],
+            mention_author=False,
+            message_reference=payload.get("message_reference", discord.utils.MISSING),
+            files=prepared.get("files", discord.utils.MISSING),
+        ) as parameters:
+            if parameters.files:
+                sent = await core_config.bot.http.request(route, form=parameters.multipart, files=parameters.files)
+            else:
+                sent = await core_config.bot.http.request(route, json=parameters.payload)
+    else:
+        if content is not None:
+            payload["content"] = content
+        if embed is not None:
+            payload["embeds"] = [embed.to_dict()]
+        if view is not None:
+            payload["components"] = view.to_components()
+        sent = await core_config.bot.http.request(route, json=payload)
+    if view is not None or (components_v2 and layout.is_dispatchable()):
         # Raw REST delivery does not register callbacks as Messageable.send does.
         # A registration error after accepted delivery must never send a duplicate.
         try:
             message_id = int(sent["id"])
-            core_config.bot._connection.store_view(view, message_id)
-            view.panel_message = channel.get_partial_message(message_id)
+            message = channel.get_partial_message(message_id)
+            if components_v2:
+                v2_delivery.commit(source, layout, message, state=core_config.bot._connection)
+            else:
+                core_config.bot._connection.store_view(view, message_id)
+                view.panel_message = message
         except Exception as error:
             print(f"[UI] View registration failed; nonce={nonce}; error={error!r}", flush=True)
     return sent

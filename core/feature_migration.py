@@ -14,17 +14,19 @@ _IDENTITY_TABLES = {
 
 def prepare_schema(connection, features, local_path):
     from core import (
-        birthday_store, capsule_store, crossroads_store, exchange_store, memories_store,
+        birthday_store, broadcast_store, capsule_store, crossroads_store, exchange_store, memories_store, premiere_store,
         status_store, story_store, wall_store,
     )
     import crush_store
 
     stores = (
         (birthday_store, ("birthdays", "birthday_active_roles")),
+        (broadcast_store, ("vivian_broadcast_sessions",)),
         (capsule_store, ("vivian_capsules", "vivian_capsule_notes")),
         (crossroads_store, ("crossroads", "crossroads_votes")),
         (exchange_store, ("exchange_profiles",)),
         (memories_store, ("memory_messages",)),
+        (premiere_store, ("vivian_premieres", "vivian_premiere_votes")),
         (status_store, ("relationships", "relationship_requests", "status_profiles")),
         (story_store, ("story_settings", "stories", "story_views")),
         (wall_store, ("wall_posts", "wall_likes", "wall_comments", "wall_privacy")),

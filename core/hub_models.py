@@ -49,8 +49,9 @@ def _request(messages, provider, max_tokens, temperature, json_mode):
             if error.status_code == 429:
                 raise groq_limits.limited(error, model) from None
             raise
-    elif provider == "openrouter":
-        response = ai_models.create_completion(model=ai_models.OPENROUTER_DEFAULT, messages=messages,
+    elif provider in {"openrouter", "deepseek"}:
+        model = ai_models.DEEPSEEK_FLASH_MODEL if provider == "deepseek" else ai_models.OPENROUTER_DEFAULT
+        response = ai_models.create_completion(model=model, messages=messages, json_mode=json_mode,
                                                max_completion_tokens=max_tokens, temperature=temperature,
                                                _deadline=deadline)
     else:
@@ -79,7 +80,7 @@ async def complete(messages, *, provider="groq", max_tokens=800, temperature=0.3
         raise ValueError("Invalid output limit.")
     if type(temperature) not in {int, float} or not math.isfinite(temperature) or not 0 <= temperature <= 2:
         raise ValueError("Invalid temperature.")
-    if provider not in {"groq", "gemini", "openrouter"}:
+    if provider not in {"groq", "gemini", "openrouter", "deepseek"}:
         raise ValueError("Unknown model provider.")
     gate, pending = _GATE, None
     try:

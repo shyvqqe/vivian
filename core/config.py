@@ -33,6 +33,7 @@ CHAT_STYLE_VERSION = "vivian-chat-v1"
 
 
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or "").strip()
+DEEPSEEK_API_KEY = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
 OPENROUTER_API_KEY = (os.getenv("OPENROUTER_API_KEY") or "").strip()
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or "").strip()
 _gemini_override = (os.getenv("GEMINI_MODEL") or "").strip().removeprefix("models/")
@@ -70,6 +71,12 @@ DAILY_SUMMARY_CHANNEL_ID = 1549170377723346984
 
 
 CHAT_CHANNEL_ID = 1549170377723346984
+
+
+_conversation_channel = (os.getenv("VIVIAN_CONVERSATION_CHANNEL_ID") or "").strip()
+CONVERSATION_CHANNEL_ID = (
+    int(_conversation_channel) if re.fullmatch(r"[0-9]{1,20}", _conversation_channel) else CHAT_CHANNEL_ID
+)
 
 
 GITHUB_UPDATES_CHANNEL_ID = 1561467032715792435
@@ -133,6 +140,20 @@ def command_prefix(bot, message):
     return "!"
 
 
+class VivianPrefixHelp(discord_commands.DefaultHelpCommand):
+    async def send_pages(self):
+        from utils import components_v2 as v2
+
+        destination = self.get_destination()
+        for page in self.paginator.pages:
+            await v2.send_message(destination, page)
+
+    async def send_error_message(self, error):
+        from utils import components_v2 as v2
+
+        await v2.send_message(self.get_destination(), error)
+
+
 class VivianBot(discord_commands.Bot):
     async def setup_hook(self):
         from core import debug
@@ -147,7 +168,7 @@ class VivianBot(discord_commands.Bot):
             await database.close()
 
 
-bot = VivianBot(command_prefix=command_prefix, intents=intents)
+bot = VivianBot(command_prefix=command_prefix, intents=intents, help_command=VivianPrefixHelp())
 core_discord_api.install(bot.http)
 
 

@@ -43,6 +43,11 @@ async def validate_patch(guild, patch):
                     raise ValueError("Choose a text channel on this server.")
                 if guild.me is None or not channel.permissions_for(guild.me).view_channel:
                     raise ValueError("Vivian cannot view this channel.")
+                if key == "conversation_channel_id":
+                    bot_permissions = channel.permissions_for(guild.me)
+                    if not (bot_permissions.read_message_history and bot_permissions.send_messages
+                            and channel.permissions_for(guild.default_role).view_channel):
+                        raise ValueError("Choose a public text channel where Vivian can read history and send messages.")
                 if key in {"anonymous_log_channel_id", "appeals_channel_id", "modlog_channel_id"}:
                     if channel.permissions_for(guild.default_role).view_channel:
                         raise ValueError("Moderator logs must use a channel hidden from @everyone.")

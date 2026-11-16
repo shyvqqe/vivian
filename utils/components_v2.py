@@ -4,7 +4,7 @@ from __future__ import annotations
 import discord
 
 from utils import v2_delivery, v2_media
-from utils.v2_layout import ControllerView, PanelLayout, layout_for
+from utils.v2_layout import ControllerView, PanelLayout, layout_for, retained_controller
 from utils.v2_content import OVERFLOW_NAME
 
 
@@ -13,62 +13,62 @@ def _spec(payload, source, message):
     body_provided = any(key in payload for key in ("content", "embed", "embeds"))
     if not body_provided and previous is not None:
         return dict(previous)
-    embed = payload.get("embed")
-    if embed is None and payload.get("embeds"):
-        embed = payload["embeds"][0]
+    embeds = (payload["embed"],) if payload.get("embed") is not None else payload.get("embeds") or ()
     content = payload.get("content")
     if not body_provided and message is not None:
         if getattr(getattr(message, "flags", None), "components_v2", False):
             return {"message": message}
         content = getattr(message, "content", "")
         embeds = getattr(message, "embeds", ())
-        embed = embeds[0] if embeds else None
-    return {"content": content, "embed": embed.copy() if embed is not None else None}
+    return {"content": content, "embeds": tuple(embed.copy() for embed in embeds)}
 
 
-def adapt(payload, *, message=None, editing=False):
+def _attachments(result, message, source, *, editing):
+    if "attachments" in result:
+        retained = result.pop("attachments") or ()
+    elif editing and message is not None:
+        cached = getattr(source, "_v2_attachments", ()) if getattr(source, "_v2_message_id", None) == message.id else ()
+        current = getattr(message, "attachments", ()) or ()
+        retained = {item.id: item for item in (*cached, *current)}.values()
+    else:
+        retained = ()
+    files = list(result.pop("files", ()) or ())
+    single = result.pop("file", None)
+    if single is not None:
+        files.append(single)
+    return [*retained, *files]
+
+
+def adapt(payload, *, message=None, editing=False, previous=None):
     result = dict(payload)
+    for key in ("poll", "stickers"):
+        if result.pop(key, None):
+            raise ValueError(f"Discord Components V2 does not support {key} in the same message.")
     source = result.pop("view", None)
-    preserve_card = isinstance(source, discord.ui.LayoutView)
+    if editing and "view" not in payload and message is not None:
+        source = retained_controller(message, previous)
+    attachments = _attachments(result, message, source, editing=editing)
     if isinstance(source, discord.ui.LayoutView):
         layout, extra = source, None
     else:
         spec = _spec(result, source, message)
-        preserve_card = "message" in spec
-        layout, extra = layout_for(source, spec)
-    result.pop("content", None)
-    result.pop("embed", None)
-    result.pop("embeds", None)
+        if "message" not in spec:
+            attachments = [item for item in attachments
+                           if getattr(item, "filename", None) != OVERFLOW_NAME]
+        layout, extra = layout_for(source, spec, file_slots=len(attachments))
+    for key in ("content", "embed", "embeds"):
+        result.pop(key, None)
     result["view"] = layout
     result.setdefault("allowed_mentions", discord.AllowedMentions.none())
-    if editing:
-        # Required when upgrading an old panel. V2 can never be downgraded to embeds.
-        result.update(content=None, embeds=[])
-        attachments = list(getattr(message, "attachments", ()) or ())
-        if (message is not None and getattr(source, "_v2_message_id", None) == message.id):
-            by_id = {item.id: item for item in getattr(source, "_v2_attachments", ())}
-            by_id.update({item.id: item for item in attachments})
-            attachments = list(by_id.values())
-        if "attachments" in result or attachments is not None:
-            attachments = result.get("attachments", attachments) or []
-            result["attachments"] = [item for item in attachments
-                                     if preserve_card or getattr(item, "filename", None) != OVERFLOW_NAME]
     if extra is not None:
-        if editing:
-            attachments = result.get("attachments")
-            if attachments is None:
-                attachments = getattr(message, "attachments", ())
-            result["attachments"] = [item for item in attachments
-                                     if getattr(item, "filename", None) != OVERFLOW_NAME] + [extra]
-        else:
-            files = list(result.pop("files", ()) or ())
-            if result.get("file") is not None:
-                files.append(result.pop("file"))
-            result["files"] = files + [extra]
-    media_files = list(result.get("attachments") or ()) + list(result.get("files") or ())
-    if result.get("file") is not None:
-        media_files.append(result["file"])
-    v2_media.normalize(layout, media_files, message=message, source=source)
+        attachments.append(extra)
+    v2_media.normalize(layout, attachments, message=message, source=source)
+    v2_media.expose_files(layout, attachments)
+    if editing:
+        # Clear legacy fields when promoting a message. The V2 flag is irreversible.
+        result.update(content=None, embeds=[], attachments=attachments)
+    elif attachments:
+        result["files"] = attachments
     return result
 
 
@@ -97,7 +97,7 @@ async def edit_original(interaction, **payload):
         target = _original_target(interaction)
         state = interaction._state
         previous = v2_delivery.registered(target, payload.get("view"), state)
-        prepared = adapt(payload, message=target, editing=True)
+        prepared = adapt(payload, message=target, editing=True, previous=previous)
         try:
             result = await interaction.edit_original_response(**prepared)
         except BaseException:
@@ -114,7 +114,7 @@ async def edit_response(interaction, **payload):
     async with v2_delivery.edit_lock(target, interaction):
         state = interaction._state
         previous = v2_delivery.registered(target, payload.get("view"), state)
-        prepared = adapt(payload, message=target, editing=True)
+        prepared = adapt(payload, message=target, editing=True, previous=previous)
         try:
             result = await interaction.response.edit_message(**prepared)
         except BaseException:
@@ -129,7 +129,7 @@ async def edit_response(interaction, **payload):
 async def edit_message(message, **payload):
     async with v2_delivery.edit_lock(message):
         previous = v2_delivery.registered(message, payload.get("view"))
-        prepared = adapt(payload, message=message, editing=True)
+        prepared = adapt(payload, message=message, editing=True, previous=previous)
         try:
             result = await message.edit(**prepared)
         except BaseException:
@@ -143,8 +143,6 @@ async def edit_message(message, **payload):
 async def send_response(interaction, content=None, **payload):
     if content is not None:
         payload["content"] = content
-    if "attachments" in payload:
-        payload["files"] = payload.pop("attachments")
     prepared = adapt(payload)
     result = await interaction.response.send_message(**prepared)
     _remember_original(interaction, result)
@@ -154,8 +152,6 @@ async def send_response(interaction, content=None, **payload):
 async def followup(interaction, content=None, **payload):
     if content is not None:
         payload["content"] = content
-    if "attachments" in payload:
-        payload["files"] = payload.pop("attachments")
     prepared = adapt(payload)
     result = await interaction.followup.send(**prepared)
     return v2_delivery.commit(payload, prepared["view"], result, state=interaction._state)
@@ -164,8 +160,6 @@ async def followup(interaction, content=None, **payload):
 async def send_message(destination, content=None, **payload):
     if content is not None:
         payload["content"] = content
-    if "attachments" in payload:
-        payload["files"] = payload.pop("attachments")
     prepared = adapt(payload)
     result = await destination.send(**prepared)
     return v2_delivery.commit(payload, prepared["view"], result)

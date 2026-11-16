@@ -8,6 +8,7 @@ import discord
 from discord import app_commands
 
 from core import config, exchange_store as store
+from utils import components_v2 as v2
 
 
 exchange = app_commands.Group(name="exchange", description="Find members who can teach what you want to learn.", guild_only=True)
@@ -19,7 +20,7 @@ def _safe(text):
 
 
 async def _finish(interaction, text):
-    await interaction.edit_original_response(content=text[:2000], allowed_mentions=discord.AllowedMentions.none())
+    await v2.edit_original(interaction, content=text[:2000], allowed_mentions=discord.AllowedMentions.none())
 
 
 async def _start(interaction):

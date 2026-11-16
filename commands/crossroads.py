@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from core import config, crossroads_store as store
+from utils import components_v2 as v2
 
 
 crossroads = app_commands.Group(name="crossroads", description="Sealed decisions with a scheduled outcome review", guild_only=True)
@@ -24,7 +25,7 @@ def _staff(interaction):
 async def _ack(interaction, *, publish=False):
     if (interaction.guild is None or interaction.guild_id is None or interaction.channel_id is None
             or interaction.channel is None or interaction.user.bot):
-        await interaction.response.send_message("Use this command as a member in a server channel.", ephemeral=True,
+        await v2.send_response(interaction, "Use this command as a member in a server channel.", ephemeral=True,
                                                 allowed_mentions=discord.AllowedMentions.none())
         return False
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -42,7 +43,7 @@ async def _ack(interaction, *, publish=False):
 
 
 async def _reply(interaction, *, text=None, embed=None):
-    return await interaction.edit_original_response(content=text, embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    return await v2.edit_original(interaction, content=text, embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 async def _failed(interaction, error):
@@ -126,7 +127,7 @@ async def results(interaction: discord.Interaction, decision_id: app_commands.Ra
         return
     await _reply(interaction, text="Preparing channel results…")
     try:
-        await interaction.followup.send(embed=embed, ephemeral=False, allowed_mentions=discord.AllowedMentions.none())
+        await v2.followup(interaction, embed=embed, ephemeral=False, allowed_mentions=discord.AllowedMentions.none())
     except discord.DiscordException as error:
         _log.error("Crossroads results publication failed: %s", type(error).__name__)
         await _reply(interaction, text="The results are available, but Discord could not confirm publication in this channel. "

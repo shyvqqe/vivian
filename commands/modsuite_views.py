@@ -10,6 +10,7 @@ import discord
 from app import modsuite_actions as actions
 from core import config, guild_settings, hub_store, modsuite_store as store
 from utils import hub_ui as ui
+from utils import components_v2 as v2
 
 
 async def _defer(interaction):
@@ -24,8 +25,8 @@ async def _private(interaction, text, *, view=None, embed=None):
     if embed is not None:
         payload["embed"] = embed
     if interaction.response.is_done():
-        return await interaction.edit_original_response(**payload)
-    return await interaction.response.send_message(**payload, ephemeral=True)
+        return await v2.edit_original(interaction, **payload)
+    return await v2.send_response(interaction, **payload, ephemeral=True)
 
 
 def case_embed(item):
@@ -65,7 +66,7 @@ class AppealModal(discord.ui.Modal, title="Submit a ban appeal"):
             published = item.get("message_id") is not None
             if channel and not published:
                 try:
-                    message = await channel.send(embed=case_embed(item), view=case_controls(guild.id, item), allowed_mentions=discord.AllowedMentions.none())
+                    message = await v2.send_message(channel, embed=case_embed(item), view=case_controls(guild.id, item), allowed_mentions=discord.AllowedMentions.none())
                     await store.finish_case(guild.id, item["id"], channel_id=channel.id, message_id=message.id)
                     published = True
                 except discord.DiscordException:
@@ -98,7 +99,7 @@ async def _feedback(item, status):
     user_id = item.get("reporter_id") or item["user_id"]
     try:
         user = config.bot.get_user(user_id) or await config.bot.fetch_user(user_id)
-        await user.send(f"Your {item['kind']} case `{item['id']}` was reviewed by a moderator. Outcome: {status}.", allowed_mentions=discord.AllowedMentions.none())
+        await v2.send_message(user, f"Your {item['kind']} case `{item['id']}` was reviewed by a moderator. Outcome: {status}.", allowed_mentions=discord.AllowedMentions.none())
     except discord.DiscordException:
         pass
 
@@ -231,7 +232,7 @@ class QuarantineView(discord.ui.View):
     @discord.ui.button(label="Verify", custom_id="vivian:quarantine:verify", style=discord.ButtonStyle.primary)
     async def verify(self, interaction, button):
         if interaction.guild is None:
-            return await interaction.response.send_message("Open this control in the server verification channel.", ephemeral=True)
+            return await v2.send_response(interaction, "Open this control in the server verification channel.", ephemeral=True)
         await interaction.response.send_modal(ChallengeModal(interaction.guild_id, interaction.user.id))
 
 

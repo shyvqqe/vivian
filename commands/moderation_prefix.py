@@ -11,7 +11,7 @@ from discord.ext import commands
 
 from app import modsuite_actions as actions
 from core import config, modsuite_store as store
-from utils import mod_logs
+from utils import components_v2 as v2, mod_logs
 
 
 def _request(ctx):
@@ -21,8 +21,7 @@ def _request(ctx):
 
 
 async def _reply(ctx, text: str) -> None:
-    await ctx.reply(text[:1850], mention_author=False,
-                    allowed_mentions=discord.AllowedMentions.none())
+    await v2.send_message(ctx, text[:1850], reference=ctx.message, mention_author=False)
 
 
 async def _failure(ctx, error: Exception) -> None:

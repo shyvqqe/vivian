@@ -8,6 +8,7 @@ from discord.ext import tasks
 from discord import app_commands
 
 from core import config as core_config, memories_store as store
+from utils import components_v2 as v2
 
 MEMORIES_CHANNEL_ID = core_config.CHAT_CHANNEL_ID
 
@@ -34,7 +35,7 @@ async def _post_memory(guild: discord.Guild, channel: discord.abc.Messageable) -
     embed.add_field(name="ОРИГИНАЛ", value=f"[Перейти к сообщению]({link})", inline=False)
     embed.set_footer(text=core_config.VIVIAN_FOOTER)
     try:
-        await channel.send(embed=embed)
+        await v2.send_message(channel, embed=embed)
         return True
     except discord.DiscordException:
         return False
@@ -105,6 +106,6 @@ async def memories_now(interaction: discord.Interaction):
     try:
         posted = await _post_memory(interaction.guild, channel)
     except (sqlite3.Error, OSError):
-        return await interaction.edit_original_response(content="Хранилище воспоминаний временно недоступно.")
+        return await v2.edit_original(interaction, content="Хранилище воспоминаний временно недоступно.")
     message = "Воспоминание опубликовано." if posted else "За эту дату в прошлые годы ничего не нашлось."
-    await interaction.edit_original_response(content=message)
+    await v2.edit_original(interaction, content=message)

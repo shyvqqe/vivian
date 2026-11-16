@@ -11,6 +11,7 @@ from app import modsuite as runtime, modsuite_actions as actions
 from commands import modsuite_views as views
 from core import config, guild_settings, hub_models, hub_store, modsuite_store as store
 from utils import hub_ui as ui
+from utils import components_v2 as v2
 
 
 add_warning = actions.add_warning
@@ -300,7 +301,7 @@ async def submit_report(interaction, target, reason, message=None):
         "message_id": message.id if message else None, "message_url": message.jump_url if message else None}, case_id=case_id)
     if not item.get("moderation_message_id"):
         try:
-            posted = await channel.send(embed=views.case_embed(item), view=views.case_controls(interaction.guild_id, item), allowed_mentions=discord.AllowedMentions.none())
+            posted = await v2.send_message(channel, embed=views.case_embed(item), view=views.case_controls(interaction.guild_id, item), allowed_mentions=discord.AllowedMentions.none())
             await store.finish_case(interaction.guild_id, item["id"], moderation_channel_id=channel.id, moderation_message_id=posted.id)
         except discord.DiscordException:
             pass

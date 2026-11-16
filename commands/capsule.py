@@ -7,6 +7,7 @@ import discord
 from discord import app_commands
 
 from core import capsule_store as store, config
+from utils import components_v2 as v2
 
 
 capsule = app_commands.Group(name="capsule", description="Shared time capsules unlocked by time and participation.", guild_only=True)
@@ -19,7 +20,7 @@ def _safe(value):
 async def _begin(interaction, *, publish=False):
     if (interaction.guild_id is None or interaction.channel_id is None
             or interaction.guild is None or interaction.channel is None):
-        await interaction.response.send_message("Use this command in a server channel.", ephemeral=True,
+        await v2.send_response(interaction, "Use this command in a server channel.", ephemeral=True,
                                                 allowed_mentions=discord.AllowedMentions.none())
         return False
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -37,7 +38,7 @@ async def _begin(interaction, *, publish=False):
 
 
 async def _notice(interaction, content):
-    await interaction.edit_original_response(content=content, allowed_mentions=discord.AllowedMentions.none())
+    await v2.edit_original(interaction, content=content, allowed_mentions=discord.AllowedMentions.none())
 
 
 async def _operation(interaction, awaitable):
@@ -104,7 +105,7 @@ async def open_command(interaction: discord.Interaction, id: app_commands.Range[
     embed.set_footer(text=f"Page {page}/{pages} · /capsule open id:{id} page:<number>")
     await _notice(interaction, f"Capsule **#{id}** is unlocked. Publishing page **{page}/{pages}** in this channel.")
     try:
-        await interaction.followup.send(embed=embed, ephemeral=False, allowed_mentions=discord.AllowedMentions.none())
+        await v2.followup(interaction, embed=embed, ephemeral=False, allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException:
         await _notice(interaction, "The capsule is unlocked, but Discord could not publish this page. Run `/capsule open` again.")
         return
@@ -125,7 +126,7 @@ async def list_command(interaction: discord.Interaction):
                      f"<t:{value['opens_at']}:R> · {value['contributors']}/{value['quorum']} contributors")
     embed = discord.Embed(title="Vivian · Channel capsules", description="\n\n".join(lines) or "No capsules in this channel.",
                           color=0xD58BFF)
-    await interaction.edit_original_response(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await v2.edit_original(interaction, embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 @capsule.command(name="cancel", description="Cancel your sealed capsule and delete its stored notes.")

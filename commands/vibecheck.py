@@ -11,6 +11,7 @@ from discord import app_commands
 
 from core import ai_models as core_ai_models, config as core_config
 from utils import helpers as utils_helpers
+from utils import components_v2 as v2
 
 COOLDOWN_SECONDS = 60 * 60
 HISTORY_SCAN_LIMIT = 300
@@ -50,9 +51,9 @@ async def vibecheck(interaction: discord.Interaction):
     try:
         messages = await _collect_messages(interaction.channel, interaction.user.id)
     except discord.DiscordException:
-        return await interaction.edit_original_response(content="Не удалось прочитать историю канала.")
+        return await v2.edit_original(interaction, content="Не удалось прочитать историю канала.")
     if len(messages) < 5:
-        return await interaction.edit_original_response(
+        return await v2.edit_original(interaction,
             content="Маловато сообщений в этом канале для честной оценки. Попробуй там, где ты чаще пишешь.")
 
     _last_check[key] = now
@@ -89,11 +90,11 @@ async def vibecheck(interaction: discord.Interaction):
         joke = str(result.get("joke", ""))[:200]
     except Exception as error:
         print(f"[Vibecheck] Unavailable; user_id={interaction.user.id}; error={type(error).__name__}", flush=True)
-        return await interaction.edit_original_response(content="Не удалось оценить вайб. Попробуй позже.")
+        return await v2.edit_original(interaction, content="Не удалось оценить вайб. Попробуй позже.")
 
     embed = utils_helpers.vivian_embed(joke, title=f"Вайб-чек · {interaction.user.display_name}")
     embed.add_field(name="РЕЙТИНГ", value=f"{rating}/100", inline=True)
     embed.add_field(name="АРХЕТИП", value=discord.utils.escape_markdown(archetype), inline=True)
     embed.set_thumbnail(url=interaction.user.display_avatar.url)
     embed.set_footer(text=f"По сообщениям в этом канале · {core_config.VIVIAN_FOOTER}")
-    await interaction.edit_original_response(content=None, embed=embed)
+    await v2.edit_original(interaction, content=None, embed=embed)

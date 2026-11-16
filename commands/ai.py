@@ -16,15 +16,21 @@ def _model_description(model):
 
 class ModelSelect(discord.ui.Select):
     def __init__(self, view):
-        current = ai_models.get_text_model(view.guild_id, view.owner_id)
-        options = [discord.SelectOption(
-            label=model.name, value=model.id, default=model.id == current,
-            description=_model_description(model),
-        ) for model in ai_models.CATALOG]
+        selected = ai_models.get_selection(view.guild_id, view.owner_id)
+        self.model_ids = {}
+        options = []
+        for index, model in enumerate(ai_models.CATALOG):
+            # A user-configured Gemini ID can be longer than Discord's select value limit.
+            value = model.id if len(model.id) <= 100 else f"catalog:{index}"
+            self.model_ids[value] = model.id
+            options.append(discord.SelectOption(
+                label=model.name, value=value, default=model.id == selected,
+                description=_model_description(model),
+            ))
         super().__init__(placeholder="Выбери модель для своих разговоров", options=options)
 
     async def callback(self, interaction):
-        await self.view.choose_model(interaction, self.values[0])
+        await self.view.choose_model(interaction, self.model_ids[self.values[0]])
 
 
 class AIView(v2.ControllerView):
@@ -36,10 +42,18 @@ class AIView(v2.ControllerView):
         self.notice = ""
         self.show_details = False
         self.add_item(ModelSelect(self))
+        self.quick_gemini.disabled = not ai_models.has_provider(ai_models.GEMINI_FAST_MODEL)
+        self.quick_gpt.disabled = not ai_models.has_provider(ai_models.GROQ_FALLBACK_TEXT)
+        self.quick_deepseek.disabled = not ai_models.has_provider(ai_models.DEEPSEEK_FLASH_MODEL)
 
     async def choose_model(self, interaction, selected):
-        if selected not in ai_models.MODELS or not ai_models.has_provider(selected):
-            await helpers.vivian_reply(interaction, "Для этой модели сначала нужен ключ её провайдера в настройках Render.", ephemeral=True)
+        model = ai_models.MODELS.get(selected)
+        if model is None:
+            await helpers.vivian_reply(interaction, "Модель отсутствует в каталоге. Открой /ai заново.", ephemeral=True)
+            return
+        if not ai_models.has_provider(selected):
+            await helpers.vivian_reply(interaction, f"Администратору бота нужно подключить API {model.provider}.",
+                                       ephemeral=True)
             return
         try:
             await interaction.response.defer()
@@ -57,24 +71,24 @@ class AIView(v2.ControllerView):
             await command_responses.edit_deferred(interaction, content=None, embed=self.make_embed(), view=self)
 
     def sync_options(self):
-        current = ai_models.get_text_model(self.guild_id, self.owner_id)
+        selected = ai_models.get_selection(self.guild_id, self.owner_id)
         for child in self.children:
             if isinstance(child, ModelSelect):
                 for option in child.options:
-                    option.default = option.value == current
-                    option.description = _model_description(ai_models.MODELS[option.value])
+                    option.default = child.model_ids[option.value] == selected
 
     def make_embed(self):
         current = ai_models.get_text_model(self.guild_id, self.owner_id)
-        default = ai_models.get_default_model()
+        selected = ai_models.get_selection(self.guild_id, self.owner_id)
         vision = ai_models.get_vision_model(self.guild_id, self.owner_id)
         scope = "на этом сервере" if self.guild_id else "в личных сообщениях"
-        embed = helpers.vivian_embed(title="Твой голос Vivian · выбор модели", description=(
-            f"**{ai_models.display_name(current)}**\n"
-            f"Личная настройка для твоих разговоров {scope}."
+        mode = "Автоматический выбор" if selected is None else "Выбрана вручную"
+        embed = helpers.vivian_embed(title="Модель Vivian", description=(
+            f"**{ai_models.display_name(current)}** · {mode}\n"
+            f"Настройка действует для твоих разговоров {scope}."
         ))
-        embed.add_field(name="ПО УМОЛЧАНИЮ", value=ai_models.display_name(default), inline=True)
-        embed.add_field(name="ИЗОБРАЖЕНИЯ", value=ai_models.display_name(vision), inline=True)
+        vision_name = ai_models.display_name(vision) if ai_models.has_provider(vision) else "API не подключён"
+        embed.add_field(name="Изображения", value=vision_name, inline=True)
         if self.show_details:
             for provider in dict.fromkeys(model.provider for model in ai_models.CATALOG):
                 models = [model for model in ai_models.CATALOG if model.provider == provider]
@@ -83,29 +97,20 @@ class AIView(v2.ControllerView):
                 embed.add_field(name=provider.upper(), value=(
                     f"{'✓ Ключ загружен' if configured else 'Ключ не задан'}\n{names}"
                 )[:1024], inline=False)
-            embed.add_field(name="О ПОДКЛЮЧЕНИИ", value=(
-                "«Ключ загружен» показывает настройку при запуске; доступность API не проверялась. "
-                "После добавления ключа дождись деплоя и открой `/ai` заново."
-            ), inline=False)
             embed.add_field(name="КОНТЕКСТ И КВОТЫ", value=(
-                "Контекст получает провайдер выбранной модели; изображения — провайдер модели выше. "
+                "Модель получает контекст разговора. Изображения обрабатывает модель, указанная выше. "
                 "При автоматическом выборе другая подключённая модель может ответить при сбое. "
-                "У Gemini и Groq квоты и оплата зависят от тарифа API-аккаунта. "
-                "OpenRouter использует только варианты `:free`; автоматической замены на платную модель нет."
+                "Квоты и оплата Gemini, Groq и DeepSeek зависят от API-аккаунта. "
+                "OpenRouter использует варианты `:free`."
             ), inline=False)
         else:
             active = ai_models.MODELS.get(current)
             if active is not None:
                 embed.add_field(name="ПРОФИЛЬ МОДЕЛИ", value=f"{active.provider} · {active.description}", inline=False)
-            available = sum(ai_models.has_provider(model.id) for model in ai_models.CATALOG)
-            embed.add_field(name="КАТАЛОГ", value=f"Ключи загружены для **{available} из {len(ai_models.CATALOG)}** моделей.", inline=False)
-            embed.add_field(name="БЫСТРЫЙ ВЫБОР", value=(
-                "Выбери вариант в меню. Для короткой беседы есть кнопка **Быстрая Gemini**. "
-                "Нагрузка и квоты API влияют на время ответа."
-            ), inline=False)
+            if not ai_models.has_provider(current):
+                embed.add_field(name="Подключение", value="Для текущей модели нужен API-ключ.", inline=False)
         if self.notice:
             embed.add_field(name="Состояние", value=self.notice, inline=False)
-        embed.set_footer(text="Личный выбор · настройки других участников не меняются · VIVIAN")
         if self.visual_enabled:
             panels._apply_panel_visual(embed, "system")
         return embed
@@ -117,9 +122,17 @@ class AIView(v2.ControllerView):
         await helpers.vivian_reply(interaction, "Открой свою панель командой `/ai`.", ephemeral=True)
         return False
 
-    @discord.ui.button(label="Быстрая Gemini", style=discord.ButtonStyle.primary, row=1)
+    @discord.ui.button(label="Gemini", style=discord.ButtonStyle.primary, row=1)
     async def quick_gemini(self, interaction, button):
         await self.choose_model(interaction, ai_models.GEMINI_FAST_MODEL)
+
+    @discord.ui.button(label="GPT", style=discord.ButtonStyle.primary, row=1)
+    async def quick_gpt(self, interaction, button):
+        await self.choose_model(interaction, ai_models.GROQ_FALLBACK_TEXT)
+
+    @discord.ui.button(label="DeepSeek", style=discord.ButtonStyle.primary, row=1)
+    async def quick_deepseek(self, interaction, button):
+        await self.choose_model(interaction, ai_models.DEEPSEEK_FLASH_MODEL)
 
     @discord.ui.button(label="О моделях и квотах", style=discord.ButtonStyle.secondary, row=2)
     async def details(self, interaction, button):

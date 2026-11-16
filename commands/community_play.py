@@ -56,7 +56,9 @@ async def publish_game(guild, channel, owner_id, *, automatic=False):
     view.add_item(JoinGame(guild.id, channel.id, item["token"]))
     text = f"**Vivian / Word hunt**\n{item['question']}\n\n" + ("Everyone can guess." if automatic else "Join below, then type your answer.") + " First correct answer wins. One guess every 5 seconds.\nCloses in one hour."
     try:
-        sent = await helpers._send_message_once(channel, text, store.nonce("start:" + item["token"]), view=view)
+        sent = await helpers._send_message_once(
+            channel, text, store.nonce("start:" + item["token"]), view=view, components_v2=True,
+        )
     except Exception:
         def failed(value):
             if value.get("token") == item["token"]:

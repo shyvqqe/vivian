@@ -8,6 +8,7 @@ from discord import app_commands
 import crush_store as store
 from core import config as core_config
 from utils import helpers as utils_helpers
+from utils import components_v2 as v2
 
 
 async def _notify_match(guild: discord.Guild, user_a: discord.abc.User, user_b: discord.abc.User):
@@ -18,7 +19,7 @@ async def _notify_match(guild: discord.Guild, user_a: discord.abc.User, user_b: 
     )
     for member in (user_a, user_b):
         try:
-            await member.send(embed=embed)
+            await v2.send_message(member, embed=embed)
         except discord.DiscordException as error:
             print(f"[Crush] DM unavailable; user_id={member.id}; error={type(error).__name__}", flush=True)
 

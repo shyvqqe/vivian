@@ -9,6 +9,7 @@ from discord import app_commands
 
 from commands import social_views as views
 from core import config, hub_store, social_store as store
+from utils import components_v2 as v2
 
 
 friend = app_commands.Group(name="friend", description="Consensual server friendships.", guild_only=True)
@@ -30,7 +31,7 @@ async def _finish(interaction, text=None, **payload):
     if text is not None:
         payload["content"] = str(text)[:2000]
     payload["allowed_mentions"] = discord.AllowedMentions.none()
-    return await interaction.edit_original_response(**payload)
+    return await v2.edit_original(interaction, **payload)
 
 
 async def _member(guild, user_id):
@@ -72,7 +73,7 @@ async def _error(interaction, error):
 
 async def _request_dm(member, text, view):
     try:
-        await member.send(text, view=view, allowed_mentions=discord.AllowedMentions.none())
+        await v2.send_message(member, text, view=view, allowed_mentions=discord.AllowedMentions.none())
         return True
     except discord.DiscordException:
         return False
@@ -491,7 +492,7 @@ async def deliver_outbox(guild, limit=5):
                         or not channel.permissions_for(other).view_channel or not channel.permissions_for(guild.me).send_messages):
                     channel = await recipient.create_dm()
             nonce = str(int.from_bytes(hashlib.sha256(f"{guild.id}:{job['key']}".encode()).digest()[:8], "big"))
-            await helpers._send_message_once(channel, text, nonce, view=controls)
+            await helpers._send_message_once(channel, text, nonce, view=controls, components_v2=True)
             success, delivered = True, delivered + 1
         except (discord.DiscordException, ValueError, TimeoutError):
             pass

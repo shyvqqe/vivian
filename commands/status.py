@@ -8,6 +8,7 @@ from discord import app_commands
 
 from core import config as core_config, status_store as store
 from utils import helpers as utils_helpers
+from utils import components_v2 as v2
 
 
 def _safe_name(member: discord.abc.User) -> str:
@@ -43,10 +44,10 @@ class RelationshipRequestView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         if not interaction.response.is_done():
-            await interaction.response.edit_message(embed=embed, view=self)
+            await v2.edit_response(interaction, embed=embed, view=self)
         else:
             try:
-                await interaction.message.edit(embed=embed, view=self)
+                await v2.edit_message(interaction.message, embed=embed, view=self)
             except discord.DiscordException:
                 pass
 
@@ -83,7 +84,7 @@ async def status_relationship(interaction: discord.Interaction, user: discord.Me
     embed = utils_helpers.vivian_embed(
         f"{interaction.user.mention} предлагает отношения {user.mention}.", title="Предложение отношений")
     try:
-        message = await interaction.channel.send(
+        message = await v2.send_message(interaction.channel,
             content=user.mention, embed=embed, view=RelationshipRequestView(),
             allowed_mentions=discord.AllowedMentions(users=[user]),
         )

@@ -5,6 +5,7 @@ Only public videos that may be lawfully downloaded and shared are supported.
 """
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 import tempfile
 
@@ -13,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from core import config
-from utils import video_downloader as videos
+from utils import command_responses, components_v2 as v2, video_downloader as videos
 
 
 async def _deliver(channel_send, *, url: str, quality: int, limit: int | None):
@@ -22,7 +23,7 @@ async def _deliver(channel_send, *, url: str, quality: int, limit: int | None):
         video = await videos.fetch_video(url, Path(temp), limit, quality=quality)
         file = discord.File(video.path, filename=video.filename)
         try:
-            await channel_send(
+            return await channel_send(
                 content=f"Видео: **{video.platform}** · {video.size / videos.MIB:.1f} МиБ",
                 file=file,
                 allowed_mentions=discord.AllowedMentions.none(),
@@ -44,23 +45,35 @@ async def download_video_slash(interaction: discord.Interaction, url: str, quali
     try:
         videos.validate_video_url(url)
     except videos.DownloadError as exc:
-        return await interaction.response.send_message(str(exc), ephemeral=True)
-    if not interaction.app_permissions.attach_files:
-        return await interaction.response.send_message("Vivian нужно право «Прикреплять файлы» в этом канале.", ephemeral=True)
-    await interaction.response.defer(thinking=True)
+        return await v2.send_response(interaction, str(exc), ephemeral=True)
+    permissions = interaction.app_permissions
+    channel = interaction.channel
+    can_send = permissions.send_messages_in_threads if isinstance(channel, discord.Thread) else permissions.send_messages
+    if channel is None or not (can_send and permissions.attach_files):
+        return await v2.send_response(
+            interaction, "Vivian нужно право отправлять сообщения и прикреплять файлы в этом канале.", ephemeral=True,
+        )
+    if not await command_responses.defer_command(interaction, ephemeral=True):
+        return
     try:
-        await _deliver(
-            interaction.followup.send, url=url, quality=quality,
+        message = await _deliver(
+            partial(v2.send_message, channel, nonce=f"vd:{interaction.id}"), url=url, quality=quality,
             limit=getattr(interaction, "filesize_limit", None),
         )
     except videos.DownloadError as exc:
-        await interaction.followup.send(str(exc), ephemeral=True)
-    except discord.HTTPException as exc:
+        await command_responses.finish_deferred(interaction, str(exc))
+    except discord.DiscordException as exc:
         print(f"[Video download] Discord upload error: {type(exc).__name__}", flush=True)
-        await interaction.followup.send("Discord не принял файл. Попробуй качество 360 или другой ролик.", ephemeral=True)
+        await command_responses.finish_deferred(
+            interaction, "Discord не принял файл. Попробуй качество 360 или другой ролик.", error=exc,
+        )
     except Exception as exc:
         print(f"[Video download] Unhandled error: {type(exc).__name__}", flush=True)
-        await interaction.followup.send("Не удалось обработать ролик. Проверь установку yt-dlp и FFmpeg.", ephemeral=True)
+        await command_responses.finish_deferred(
+            interaction, "Не удалось обработать ролик. Проверь установку yt-dlp и FFmpeg.",
+        )
+    else:
+        await command_responses.finish_deferred(interaction, f"[Перейти к видео]({message.jump_url})")
 
 
 @download_video_slash.error
@@ -70,10 +83,11 @@ async def download_video_slash_error(interaction: discord.Interaction, error: ap
     else:
         print(f"[Video download] Slash check error: {type(error).__name__}", flush=True)
         message = "Команда сейчас недоступна. Проверь права Vivian в канале."
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-    else:
-        await interaction.response.send_message(message, ephemeral=True)
+    await command_responses.finish_deferred(interaction, message)
+
+
+async def _prefix_reply(ctx: commands.Context, text: str):
+    await v2.send_message(ctx, text, reference=ctx.message, mention_author=False)
 
 
 @config.bot.command(name="download", aliases=["dl", "video"])
@@ -88,17 +102,17 @@ async def download_video_prefix(ctx: commands.Context, url: str, quality: int = 
             raise videos.DownloadError("Выбери качество 360, 480 или 720.")
         async with ctx.typing():
             await _deliver(
-                ctx.send, url=url, quality=quality,
+                partial(v2.send_message, ctx), url=url, quality=quality,
                 limit=getattr(ctx.guild, "filesize_limit", None),
             )
     except videos.DownloadError as exc:
-        await ctx.reply(str(exc), mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+        await _prefix_reply(ctx, str(exc))
     except discord.HTTPException as exc:
         print(f"[Video download] Prefix upload error: {type(exc).__name__}", flush=True)
-        await ctx.reply("Discord не принял файл. Попробуй качество 360.", mention_author=False)
+        await _prefix_reply(ctx, "Discord не принял файл. Попробуй качество 360.")
     except Exception as exc:
         print(f"[Video download] Prefix error: {type(exc).__name__}", flush=True)
-        await ctx.reply("Не получилось скачать ролик. Проверь yt-dlp и доступность видео.", mention_author=False)
+        await _prefix_reply(ctx, "Не получилось скачать ролик. Проверь yt-dlp и доступность видео.")
 
 
 @download_video_prefix.error
@@ -114,4 +128,4 @@ async def download_video_prefix_error(ctx: commands.Context, error: commands.Com
     else:
         print(f"[Video download] Prefix check error: {type(error).__name__}", flush=True)
         message = "Не удалось запустить скачивание."
-    await ctx.reply(message, mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+    await _prefix_reply(ctx, message)

@@ -5,10 +5,12 @@ import math
 import time
 
 import discord
+from discord import app_commands
 
 from core import config, discord_api
 from commands import help_panel
 from utils import command_responses as responses, components_v2 as v2, helpers
+from vivian.creator import CREATOR_NAME
 from visuals import panels
 
 
@@ -112,7 +114,7 @@ class AboutView(InformationView):
 
     def make_embed(self):
         embed = helpers.vivian_embed(title="Vivian · рядом с твоим сервером", description=(
-            "Собеседница, музыка, статистика и уютные приватки.\nСоздатель — **shyvae**."
+            f"Собеседница, музыка, статистика и уютные приватки.\nСоздатель — **{CREATOR_NAME}**."
         ))
         _avatar(embed)
         if self.page == "about":
@@ -130,11 +132,14 @@ class AboutView(InformationView):
                 ("ОБЩЕНИЕ", "Контекст беседы, память и разбор изображений. Модель — `/ai`."),
                 ("ТВОЯ КАРТОЧКА", "`/card` или `/crad` — аватарка, уровень, прогресс и статистика участника."),
                 ("УЧАСТНИКИ", "Уровни и достижения — `/rank`; пульс сообщества — `/activity`."),
+                ("ВМЕСТЕ В ЧАТЕ", "`/premiere` — приглашение на событие. `/broadcast start` — пульт эфира. `/puzzle code` — общая головоломка."),
+                ("СТУДИЯ И ЛАБОРАТОРИЯ", "`/studio storyboard` — раскадровка с таймкодами. `/lab matrix` — взвешенное сравнение вариантов."),
                 ("ЗАДАНИЯ ЗА ОБЩЕНИЕ", "`/quests` или `/tasks` — цели на день и твой прогресс в чате."),
                 ("МУЗЫКА", "`/play` или `!play` — сразу включить песню; `/search` — выбор; `/queue` — очередь. Ссылки Spotify, Apple, VK и Яндекс используются для поиска доступного аудио."),
                 ("СКАЧИВАНИЕ ВИДЕО", "Просто отправь ссылку на TikTok, Reels или YouTube — появятся кнопки «Скачать видео» и «Картинка + музыка». Также есть `/download` и `!download`."),
                 ("ПРИВАТНЫЕ КОМНАТЫ", "`/room create` — выбери участников по @ и создай свою голосовую."),
                 ("ПОМОЩЬ ПРОЕКТУ", "Идеи — `/suggest`; ошибки — `/bug`; оформление до / после — `/showcases`."),
+                ("ДОБАВИТЬ VIVIAN", "`/invite` — ссылка для установки бота на другой сервер."),
                 ("МОДЕРАЦИЯ", "Блокировка, очистка и управление каналом; доступ определяют права Discord."),
             ):
                 embed.add_field(name=name, value=value, inline=False)
@@ -157,10 +162,14 @@ class AboutView(InformationView):
 
 
 @config.bot.tree.command(name="help", description="Просмотреть команды Vivian и краткие описания их функций.")
-async def help_command(interaction: discord.Interaction):
+@app_commands.choices(category=[app_commands.Choice(name=label, value=group)
+                                for group, label in help_panel.NEW_GROUPS.items()])
+async def help_command(interaction: discord.Interaction, category: str | None = None):
     if not await responses.defer_command(interaction, ephemeral=True):
         return
-    view = help_panel.HelpView(interaction.user.id, interaction.guild.id if interaction.guild else 0, False)
+    view = help_panel.HelpView(
+        interaction.user.id, interaction.guild.id if interaction.guild else 0, category=category,
+    )
     view.panel_message = await responses.send_panel(interaction, view=view, style="system")
 
 
@@ -179,3 +188,20 @@ async def about(interaction: discord.Interaction):
         return
     view = AboutView(interaction)
     view.panel_message = await responses.send_panel(interaction, view=view, style="system")
+
+
+@config.bot.tree.command(name="invite", description="Получить ссылку для установки Vivian на другом сервере.")
+@app_commands.checks.cooldown(1, 5, key=lambda interaction: interaction.user.id)
+async def invite(interaction: discord.Interaction):
+    url = f"https://discord.com/oauth2/authorize?client_id={interaction.application_id}"
+    view = v2.ControllerView(timeout=300)
+    view.add_item(discord.ui.Button(label="Добавить Vivian", url=url))
+    await v2.send_response(
+        interaction,
+        embed=helpers.vivian_embed(
+            f"Отправь ссылку владельцу сервера или выбери свой сервер.\n\n`{url}`",
+            title="Vivian для твоего сервера",
+        ),
+        view=view,
+        ephemeral=True,
+    )

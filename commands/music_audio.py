@@ -9,7 +9,7 @@ from commands import music_panels as commands_music_panels
 from commands import music_search as commands_music_search
 from commands import music_relay as commands_music_relay
 from core import music_state as core_music_state
-from utils import ffmpeg_runtime
+from utils import components_v2 as v2, ffmpeg_runtime
 
 
 def _append_music_tracks(guild_id: int, tracks: list[dict]) -> None:
@@ -129,10 +129,7 @@ async def _report_delayed_start(guild, starter: asyncio.Task, generation: int, c
         guild.id, "Не удалось запустить трек. Проверь доступ к YouTube и FFmpeg."
     )
     try:
-        await channel.send(
-            f"Не удалось запустить музыку: {reason}",
-            allowed_mentions=discord.AllowedMentions.none(),
-        )
+        await v2.send_message(channel, f"Не удалось запустить музыку: {reason}")
     except discord.DiscordException:
         pass
 

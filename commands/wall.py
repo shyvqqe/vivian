@@ -7,6 +7,7 @@ from discord import app_commands
 
 from core import config as core_config, wall_store as store
 from utils import helpers as utils_helpers
+from utils import components_v2 as v2
 
 try:
     from core.friends_store import are_friends
@@ -27,6 +28,13 @@ def _post_embed(post: dict, like_count: int) -> discord.Embed:
     return embed
 
 
+def _post_view(post_id):
+    view = discord.ui.View(timeout=None)
+    view.add_item(LikeButton(post_id))
+    view.add_item(CommentButton(post_id))
+    return view
+
+
 class CommentModal(discord.ui.Modal, title="Комментарий"):
     text = discord.ui.TextInput(label="Текст комментария", style=discord.TextStyle.paragraph, max_length=500)
 
@@ -39,12 +47,12 @@ class CommentModal(discord.ui.Modal, title="Комментарий"):
         try:
             post = await store.get_post(self.post_id)
             if post is None:
-                return await interaction.edit_original_response(content="Пост больше не существует.")
+                return await v2.edit_original(interaction, content="Пост больше не существует.")
             await store.add_comment(self.post_id, interaction.user.id, self.text.value)
         except ValueError as error:
-            return await interaction.edit_original_response(content=str(error))
+            return await v2.edit_original(interaction, content=str(error))
         except (sqlite3.Error, OSError):
-            return await interaction.edit_original_response(content="Хранилище временно недоступно.")
+            return await v2.edit_original(interaction, content="Хранилище временно недоступно.")
 
         destination = None
         if post.get("thread_id"):
@@ -58,10 +66,10 @@ class CommentModal(discord.ui.Modal, title="Комментарий"):
             embed = utils_helpers.vivian_embed(self.text.value, title="Новый комментарий")
             embed.add_field(name="АВТОР", value=interaction.user.mention)
             try:
-                await destination.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                await v2.send_message(destination, embed=embed, allowed_mentions=discord.AllowedMentions.none())
             except discord.DiscordException:
                 pass
-        await interaction.edit_original_response(content="Комментарий добавлен.")
+        await v2.edit_original(interaction, content="Комментарий добавлен.")
 
 
 class LikeButton(
@@ -90,7 +98,9 @@ class LikeButton(
                 interaction, "Хранилище временно недоступно.", error=True, ephemeral=True)
         if post is not None and interaction.message is not None:
             try:
-                await interaction.message.edit(embed=_post_embed(post, result["count"]))
+                await v2.edit_message(
+                    interaction.message, embed=_post_embed(post, result["count"]), view=_post_view(self.post_id),
+                )
             except discord.DiscordException:
                 pass
         text = "Лайк поставлен." if result["liked"] else "Лайк убран."
@@ -157,11 +167,9 @@ async def wall_post(interaction: discord.Interaction, user: discord.Member, text
             interaction, "Хранилище временно недоступно. Попробуй позже.", error=True, ephemeral=True)
 
     embed = _post_embed({"text": text, "author_id": interaction.user.id}, 0)
-    view = discord.ui.View(timeout=None)
-    view.add_item(LikeButton(created["id"]))
-    view.add_item(CommentButton(created["id"]))
+    view = _post_view(created["id"])
     try:
-        message = await interaction.channel.send(
+        message = await v2.send_message(interaction.channel,
             content=f"Новая запись на стене {user.mention}", embed=embed, view=view,
             allowed_mentions=discord.AllowedMentions(users=[user]),
         )

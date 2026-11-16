@@ -13,7 +13,7 @@ from collections import OrderedDict
 
 import discord
 
-from utils import video_downloader as videos
+from utils import command_responses, components_v2 as v2, video_downloader as videos
 
 _PROMPT_COOLDOWN_SECONDS = 25
 _MAX_RECENT = 2048
@@ -36,7 +36,7 @@ def get_video_offer(message):
     return videos.find_video_url(content)
 
 
-class VideoOffer(discord.ui.View):
+class VideoOffer(v2.ControllerView):
     def __init__(self, *, author_id: int, request: videos.VideoRequest):
         super().__init__(timeout=180)
         self.author_id = author_id
@@ -47,7 +47,8 @@ class VideoOffer(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
-            await interaction.response.send_message(
+            await v2.send_response(
+                interaction,
                 "Эти кнопки доступны автору ссылки. Отправь свою ссылку, чтобы скачать ролик.",
                 ephemeral=True,
             )
@@ -56,17 +57,19 @@ class VideoOffer(discord.ui.View):
 
     async def _perform(self, interaction: discord.Interaction, mode: str) -> None:
         if mode in self._done:
-            return await interaction.response.send_message("Ты уже скачал этот формат.", ephemeral=True)
+            return await v2.send_response(interaction, "Ты уже скачал этот формат.", ephemeral=True)
         if self._busy:
-            return await interaction.response.send_message("Другая загрузка ещё выполняется.", ephemeral=True)
+            return await v2.send_response(interaction, "Другая загрузка ещё выполняется.", ephemeral=True)
         if not interaction.app_permissions.attach_files:
-            return await interaction.response.send_message(
+            return await v2.send_response(
+                interaction,
                 "Мне нужно право «Прикреплять файлы» в этом канале.", ephemeral=True,
             )
         self._busy = True
         try:
             # The file is visible only to the requester, not the whole channel.
-            await interaction.response.defer(thinking=True, ephemeral=True)
+            if not await command_responses.defer_command(interaction, ephemeral=True):
+                return
             limit = getattr(interaction, "filesize_limit", None)
             if limit is None and interaction.guild is not None:
                 limit = getattr(interaction.guild, "filesize_limit", None)
@@ -81,10 +84,10 @@ class VideoOffer(discord.ui.View):
                                f"{result.size / videos.MIB:.1f} МиБ (MP4)")
                 file = discord.File(result.path, filename=result.filename)
                 try:
-                    await interaction.followup.send(
+                    await v2.edit_original(
+                        interaction,
                         content=caption,
-                        file=file,
-                        ephemeral=True,
+                        attachments=[file],
                         allowed_mentions=discord.AllowedMentions.none(),
                     )
                 finally:
@@ -98,25 +101,22 @@ class VideoOffer(discord.ui.View):
                     child.disabled = True
             if self.offer_message is not None:
                 try:
-                    await self.offer_message.edit(view=self)
-                except discord.HTTPException:
+                    await v2.edit_message(self.offer_message, view=self)
+                except discord.DiscordException:
                     pass
         except videos.DownloadError as exc:
-            await interaction.followup.send(str(exc), ephemeral=True)
-        except discord.HTTPException:
-            await interaction.followup.send(
+            await command_responses.finish_deferred(interaction, str(exc))
+        except discord.DiscordException as exc:
+            await command_responses.finish_deferred(
+                interaction,
                 "Discord не принял файл. Попробуй другое видео или более короткий ролик.",
-                ephemeral=True,
+                error=exc,
             )
         except Exception as exc:
             print(f"[VideoAuto] {mode} failed ({type(exc).__name__})", flush=True)
-            try:
-                await interaction.followup.send(
-                    "Не удалось обработать ролик. Проверь FFmpeg, yt-dlp и доступность видео.",
-                    ephemeral=True,
-                )
-            except discord.HTTPException:
-                pass
+            await command_responses.finish_deferred(
+                interaction, "Не удалось обработать ролик. Проверь FFmpeg, yt-dlp и доступность видео.",
+            )
         finally:
             self._busy = False
 
@@ -134,8 +134,8 @@ class VideoOffer(discord.ui.View):
                 child.disabled = True
         if self.offer_message is not None:
             try:
-                await self.offer_message.edit(view=self)
-            except discord.HTTPException:
+                await v2.edit_message(self.offer_message, view=self)
+            except discord.DiscordException:
                 pass
 
 
@@ -154,8 +154,8 @@ async def maybe_offer_download(message) -> bool:
         return False
     key = (message.guild.id, message.author.id)
     now = time.monotonic()
-    previous = _recent.get(key, 0)
-    if now - previous < _PROMPT_COOLDOWN_SECONDS:
+    previous = _recent.get(key)
+    if previous is not None and now - previous < _PROMPT_COOLDOWN_SECONDS:
         # A recognized link must not go through the chat model accidentally.
         return True
     _recent[key] = now
@@ -171,15 +171,10 @@ async def maybe_offer_download(message) -> bool:
         "*Кнопки доступны автору ссылки в течение 3 минут.*"
     )
     try:
-        if permissions.read_message_history:
-            view.offer_message = await message.reply(
-                description, view=view, mention_author=False,
-                allowed_mentions=discord.AllowedMentions.none(),
-            )
-        else:
-            view.offer_message = await message.channel.send(
-                description, view=view, allowed_mentions=discord.AllowedMentions.none(),
-            )
+        view.offer_message = await v2.send_message(
+            message.channel, description, view=view, mention_author=False,
+            reference=message if permissions.read_message_history else None,
+        )
         return True
     except discord.HTTPException as exc:
         _recent.pop(key, None)

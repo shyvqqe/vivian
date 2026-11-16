@@ -10,6 +10,7 @@ from discord import app_commands
 
 from core import birthday_store as store, config as core_config
 from utils import helpers as utils_helpers
+from utils import components_v2 as v2
 
 ROLE_NAME = "🎂 Именинник"
 ROLE_DURATION_SECONDS = 24 * 60 * 60
@@ -61,7 +62,7 @@ async def birthday_congratulate_loop():
                 " ".join(mentions) + "\nПоздравляем с днём рождения! 🎉", title="Сегодня день рождения",
             )
             try:
-                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+                await v2.send_message(channel, embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
             except discord.DiscordException:
                 pass
 

@@ -9,6 +9,7 @@ from discord import app_commands
 from app import shop as runtime
 from core import config, economy_store, guild_settings, shop_store as store
 from utils import hub_ui as ui
+from utils import components_v2 as v2
 
 
 economy = app_commands.Group(name="economy", description="Server currency and activity branches", guild_only=True)
@@ -45,7 +46,7 @@ class OwnedView(discord.ui.View):
             except Exception as error:
                 await ui.error(interaction, error)
                 return False
-        await interaction.response.send_message("Open your own view with the same command.", ephemeral=True)
+        await v2.send_response(interaction, "Open your own view with the same command.", ephemeral=True)
         return False
 
     async def on_error(self, interaction, error, item):
@@ -77,20 +78,20 @@ class CatalogView(OwnedView):
     async def previous(self, interaction, button):
         self.page -= 1
         self.sync()
-        await interaction.response.edit_message(embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none())
+        await v2.edit_response(interaction, embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none())
 
     @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
     async def next(self, interaction, button):
         self.page += 1
         self.sync()
-        await interaction.response.edit_message(embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none())
+        await v2.edit_response(interaction, embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none())
 
     @discord.ui.button(label="Refresh", style=discord.ButtonStyle.primary)
     async def refresh(self, interaction, button):
         await interaction.response.defer()
         self.items = sorted(await store.catalog(self.guild_id), key=lambda item: item["key"])
         self.sync()
-        await interaction.edit_original_response(embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none())
+        await v2.edit_original(interaction, embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none())
 
 
 class LeaderboardView(OwnedView):
@@ -113,7 +114,7 @@ class LeaderboardView(OwnedView):
         await interaction.response.defer()
         self.page = max(0, self.page + amount)
         await self.load()
-        await interaction.edit_original_response(embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none())
+        await v2.edit_original(interaction, embed=self.embed(), view=self, allowed_mentions=discord.AllowedMentions.none())
 
     @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary)
     async def previous(self, interaction, button):

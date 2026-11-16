@@ -12,6 +12,7 @@ from discord import app_commands
 
 from app import life as runtime
 from core import config, guild_settings, life_models as models, life_store as store
+from utils import components_v2 as v2
 
 
 _log = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ timeline = app_commands.Group(name="timeline", description="Newspapers grounded 
 async def _ack(interaction):
     if (interaction.guild is None or interaction.channel is None or interaction.user.bot
             or not interaction.permissions.view_channel):
-        await interaction.response.send_message("Use this command as a member in an accessible server channel.",
+        await v2.send_response(interaction, "Use this command as a member in an accessible server channel.",
                                                 ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
         return False
     await interaction.response.defer(ephemeral=True, thinking=True)
@@ -32,7 +33,7 @@ async def _ack(interaction):
 
 
 async def _reply(interaction, text=None, *, embed=None):
-    await interaction.edit_original_response(content=text, embed=embed, allowed_mentions=discord.AllowedMentions.none())
+    await v2.edit_original(interaction, content=text, embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 async def _failure(interaction, error):
@@ -97,15 +98,18 @@ class ConfessionModal(discord.ui.Modal, title="Anonymous confession"):
             embed = discord.Embed(title=f"Confession #{item['number']}", description=runtime.safe(content, 3500),
                                   color=config.VIVIAN_ACCENT)
             embed.set_footer(text=f"Confession #{item['number']} · Publicly anonymous; abuse is accountable to moderators")
-            view = AnonymousReplyView() if parent is None else None
-            message = await destination.send(embed=embed, view=view, allowed_mentions=discord.AllowedMentions.none(), nonce=str(interaction.id))
+            view = None
+            if parent is None:
+                view = discord.ui.View(timeout=None)
+                view.add_item(ConfessionReplyButton(item["number"]))
+            message = await v2.send_message(destination, embed=embed, view=view, nonce=str(interaction.id))
             try:
                 item.update(message_id=message.id, thread_id=destination.id if parent else None)
                 await store.save_confession(interaction.guild_id, item)
                 log = await interaction.guild.fetch_channel(log.id)
                 if not runtime.private_log(log, interaction.guild):
                     raise ValueError("The moderator log is no longer private; the anonymous post was withdrawn.")
-                await log.send(f"Confession #{item['number']} · author ID {interaction.user.id}\n{message.jump_url}",
+                await v2.send_message(log, f"Confession #{item['number']} · author ID {interaction.user.id}\n{message.jump_url}",
                                allowed_mentions=discord.AllowedMentions.none())
             except Exception:
                 try:
@@ -118,6 +122,34 @@ class ConfessionModal(discord.ui.Modal, title="Anonymous confession"):
             await _failure(interaction, error)
 
 
+async def _open_confession_reply(interaction, number):
+    message = interaction.message
+    bot_id = getattr(config.bot.user, "id", None)
+    if (interaction.guild is None or message is None or message.author.id != bot_id or number is None
+            or interaction.user.bot or not interaction.permissions.view_channel):
+        await v2.send_response(interaction, "This confession is unavailable.", ephemeral=True)
+        return
+    await interaction.response.send_modal(ConfessionModal(reply_to=number, parent_message=message.id))
+
+
+class ConfessionReplyButton(
+    discord.ui.DynamicItem[discord.ui.Button], template=r"vivian:confession:reply:(?P<number>\d{1,20})",
+):
+    def __init__(self, number):
+        self.number = number
+        super().__init__(discord.ui.Button(
+            label="Reply anonymously", style=discord.ButtonStyle.secondary,
+            custom_id=f"vivian:confession:reply:{number}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match, /):
+        return cls(int(match["number"]))
+
+    async def callback(self, interaction):
+        await _open_confession_reply(interaction, self.number)
+
+
 class AnonymousReplyView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -125,14 +157,9 @@ class AnonymousReplyView(discord.ui.View):
     @discord.ui.button(label="Reply anonymously", style=discord.ButtonStyle.secondary, custom_id="vivian:confession:reply")
     async def reply(self, interaction, button):
         message = interaction.message
-        bot_id = getattr(config.bot.user, "id", None)
         footer = message.embeds[0].footer.text if message and message.embeds else ""
         match = re.match(r"Confession #(\d+) ·", footer or "")
-        if (interaction.guild is None or not message or message.author.id != bot_id or not match
-                or interaction.user.bot or not interaction.permissions.view_channel):
-            await interaction.response.send_message("This confession is unavailable.", ephemeral=True)
-            return
-        await interaction.response.send_modal(ConfessionModal(reply_to=int(match[1]), parent_message=message.id))
+        await _open_confession_reply(interaction, int(match[1]) if match else None)
 
 
 class StoryViewedView(discord.ui.View):
@@ -191,7 +218,7 @@ def register_views():
     if not getattr(config.bot, "life_views_registered", False):
         config.bot.add_view(AnonymousReplyView())
         config.bot.add_view(StoryViewedView())
-        config.bot.add_dynamic_items(LegacyStoryButton)
+        config.bot.add_dynamic_items(ConfessionReplyButton, LegacyStoryButton)
         config.bot.life_views_registered = True
 
 
@@ -199,7 +226,7 @@ def register_views():
 @app_commands.guild_only()
 async def confess(interaction: discord.Interaction):
     if interaction.user.bot or interaction.guild is None or not interaction.permissions.view_channel:
-        return await interaction.response.send_message("Use this in an accessible server channel.", ephemeral=True)
+        return await v2.send_response(interaction, "Use this in an accessible server channel.", ephemeral=True)
     await interaction.response.send_modal(ConfessionModal())
 
 
@@ -360,8 +387,12 @@ async def story_post(interaction: discord.Interaction, text: app_commands.Range[
         embed = discord.Embed(title=f"Story · {runtime.safe(interaction.user.display_name, 80)}",
                               description=runtime.safe(text or "", 3500), color=config.VIVIAN_ACCENT)
         embed.set_footer(text=f"Story {item['id']} · expires in 24 hours · only voluntary viewer clicks are recorded")
-        message = await channel.send(embed=embed, file=file if file else discord.utils.MISSING,
-                                     view=StoryViewedView(), allowed_mentions=discord.AllowedMentions.none(), nonce=item["id"])
+        uploads = {"file": file} if file is not None else {}
+        if file is not None and (attachment.content_type or "").startswith("image/"):
+            embed.set_image(url=f"attachment://{file.filename}")
+        message = await v2.send_message(
+            channel, embed=embed, view=StoryViewedView(), nonce=item["id"], **uploads,
+        )
         try:
             item.update(message_id=message.id, status="active")
             await store.save_story(interaction.guild_id, item["id"], item)

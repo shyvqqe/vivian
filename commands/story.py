@@ -9,6 +9,7 @@ from discord import app_commands
 
 from core import config as core_config, story_store as store
 from utils import helpers as utils_helpers
+from utils import components_v2 as v2
 
 
 class SeenButton(
@@ -154,7 +155,7 @@ async def story_post(interaction: discord.Interaction, text: str = None, image: 
     view.add_item(SeenButton(created["id"]))
     view.add_item(ViewersButton(created["id"], interaction.user.id))
     try:
-        message = await channel.send(embed=embed, view=view)
+        message = await v2.send_message(channel, embed=embed, view=view)
     except discord.DiscordException:
         return await utils_helpers.vivian_reply(
             interaction, "История сохранена, но опубликовать карточку не удалось.", error=True, ephemeral=True)

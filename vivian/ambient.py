@@ -3,19 +3,56 @@ import asyncio
 from collections import deque
 import hashlib
 import json
-from discord.ext import tasks
 import time
+
+from discord.ext import tasks
+
+from app import chat_routing
 from core import config as core_config
 from core import discord_api as core_discord_api
 from core import ai_models as core_ai_models
 from vivian import ambient_questions as vivian_ambient_questions
 from vivian import ambient_state as vivian_ambient_state
 from vivian import memory as vivian_memory
+from vivian.memory_state import AI_MEMORY_SECRET_PATTERN
+from vivian.memory_controls_store import PURGED_SOURCE_IDS
 from vivian import reactions as vivian_reactions
 from utils import helpers as utils_helpers
 
 
 refresh_configuration = vivian_ambient_state.refresh_configuration
+_ambient_tasks: dict[int, asyncio.Task] = {}
+_MAX_AMBIENT_TASKS = 4
+
+
+def _draft_still_relevant(message, context, now) -> bool:
+    guild_id, channel_id = message.guild.id, message.channel.id
+    if now - context[-1]["timestamp"] > 30 or chat_routing.channel_is_busy(channel_id):
+        return False
+    state = vivian_ambient_state._ambient_state_for(guild_id)
+    direct_id = state["last_direct_id"]
+    if now < state["pause_until"] or (direct_id is not None and direct_id >= message.id):
+        return False
+    purged = PURGED_SOURCE_IDS.get((guild_id, channel_id), ())
+    if any(item["message_id"] in purged for item in context):
+        return False
+    if not vivian_ambient_state._ambient_has_recent_dialogue(state):
+        return False
+    arrivals = [item for item in state["recent_arrivals"] if item["message_id"] > message.id]
+    if len(arrivals) > 2 or any(not item["approved"] or item.get("sensitive") for item in arrivals):
+        return False
+    current = vivian_ambient_state._ambient_context_for(guild_id, now)
+    if not any(item["message_id"] == message.id for item in current):
+        return False
+    topic = vivian_memory._ai_memory_tokens(" ".join(item["text"] for item in context[-3:]))
+    for item in current:
+        if item["message_id"] <= message.id:
+            continue
+        text = item["text"]
+        if (vivian_ambient_state.AMBIENT_SENSITIVE_PATTERN.search(text) or AI_MEMORY_SECRET_PATTERN.search(text)
+                or (len(text) > 50 and not topic & vivian_memory._ai_memory_tokens(text))):
+            return False
+    return True
 
 
 async def _ambient_reply(message, context: list[dict]) -> None:
@@ -28,14 +65,7 @@ async def _ambient_reply(message, context: list[dict]) -> None:
         model = core_ai_models.get_default_model()
         if not core_ai_models.has_provider(model) or not vivian_ambient_state._ambient_channel_allowed(message.channel):
             return
-        if time.time() - context[-1]["timestamp"] > 30:
-            return
-        state = vivian_ambient_state._ambient_state_for(message.guild.id)
-        if time.time() < state["pause_until"]:
-            return
-        if not vivian_ambient_state._ambient_has_recent_dialogue(state):
-            return
-        if state["latest_message_id"] is not None and state["latest_message_id"] != message.id:
+        if not _draft_still_relevant(message, context, time.time()):
             return
         seriousness = any(vivian_reactions._mood_is_serious(vivian_reactions._mood_text(item["text"])) for item in context[-4:])
         earlier_chat = []
@@ -74,12 +104,8 @@ async def _ambient_reply(message, context: list[dict]) -> None:
         )
         if seriousness:
             instructions += "Тон последних сообщений серьёзный: не шути, не смейся и не обесценивай проблему. "
-        try:
-            from core import persona_store
-            async with asyncio.timeout(3):
-                instructions += await persona_store.context(message.guild.id, message.author.id)
-        except Exception:
-            pass
+        if not _draft_still_relevant(message, context, time.time()):
+            return
         options = {"max_completion_tokens": 1024, "_deadline": time.monotonic() + 20}
         completion = await asyncio.wait_for(
             asyncio.to_thread(
@@ -94,33 +120,27 @@ async def _ambient_reply(message, context: list[dict]) -> None:
             ),
             timeout=25.0,
         )
+        if not completion.choices:
+            return
         choice = completion.choices[0]
         reply = vivian_ambient_state._ambient_finish_reply(choice.message.content, choice.finish_reason)
-        await refresh_configuration(message.guild)
+        await refresh_configuration(message.guild, force=True)
         if not reply or not vivian_ambient_state._ambient_channel_allowed(message.channel):
-            return
-        state = vivian_ambient_state._ambient_state_for(message.guild.id)
-        if time.time() < state["pause_until"] or time.time() - context[-1]["timestamp"] > 30:
-            return
-        if not vivian_ambient_state._ambient_has_recent_dialogue(state):
-            return
-        if state["latest_message_id"] is not None and state["latest_message_id"] != message.id:
-            return
-        # A fresh direct question or a changed conversation makes the old draft stale.
-        current = vivian_ambient_state._ambient_context_for(message.guild.id, time.time())
-        if not current or current[-1]["message_id"] != message.id:
             return
         if core_discord_api.is_paused():
             return
         now = time.time()
+        if not _draft_still_relevant(message, context, now):
+            return
         day = vivian_ambient_state._ambient_local_time(message.guild.id, now).date().isoformat()
         if not await vivian_ambient_state._ambient_reserve(message.guild.id, message.channel.id, now, day):
             return
-        await refresh_configuration(message.guild)
-        if not vivian_ambient_state._ambient_channel_allowed(message.channel) or core_discord_api.is_paused():
+        if (not vivian_ambient_state._ambient_channel_allowed(message.channel) or core_discord_api.is_paused()
+                or not _draft_still_relevant(message, context, time.time())):
             return
         nonce = hashlib.blake2b(f"vivian-ambient:{message.id}".encode(), digest_size=12).hexdigest()
         sent = await utils_helpers._send_message_once(message.channel, reply, nonce=nonce)
+        vivian_ambient_state._ambient_state_for(message.guild.id)["last_sent"] = time.time()
         vivian_ambient_questions._ambient_note_question(message.channel.guild.id, reply, sent)
         await vivian_memory._remember_vivian_message(message.channel, sent, reply)
     except Exception as error:
@@ -136,21 +156,22 @@ async def _ambient_observe(message, directly_addressed: bool = False) -> None:
     await refresh_configuration(message.guild)
     if not vivian_ambient_state._ambient_channel_allowed(message.channel):
         return
-    vivian_ambient_state._ambient_note_arrival(message)
+    vivian_ambient_state._ambient_note_arrival(message, directly_addressed=directly_addressed)
     now = time.time()
     state = vivian_ambient_state._ambient_state_for(message.guild.id)
+    raw = message.content or ""
+    sensitive = bool(AI_MEMORY_SECRET_PATTERN.search(raw) or vivian_ambient_state.AMBIENT_SENSITIVE_PATTERN.search(raw))
     for arrival in state["recent_arrivals"]:
         if arrival["message_id"] == message.id:
             arrival["approved"] = True
+            arrival["sensitive"] = sensitive
             break
     is_latest = state["latest_message_id"] == message.id
-    if directly_addressed and is_latest:
-        state["last_attempt"] = now
-    if now < state["pause_until"]:
+    if sensitive or now < state["pause_until"]:
         return
     if state["last_stop_message_id"] is not None and message.id <= state["last_stop_message_id"]:
         return
-    text = vivian_ambient_state._ambient_clean_text(message.content)
+    text = vivian_ambient_state._ambient_clean_text(raw)
     if not text or text.startswith(("/", "!")):
         return
     context = vivian_ambient_state._ambient_context_for(message.guild.id, now)
@@ -169,16 +190,20 @@ async def _ambient_observe(message, directly_addressed: bool = False) -> None:
         vivian_ambient_state.AMBIENT_CONTEXT[message.guild.id] = deque(
             sorted(context, key=lambda item: item["message_id"])[-18:], maxlen=18,
         )
-    if directly_addressed or not is_latest:
+    if directly_addressed or not is_latest or chat_routing.channel_is_busy(message.channel.id):
         return
     if not core_ai_models.has_provider(core_ai_models.get_default_model()) or len(text) < 20 or "http" in text.lower():
         return
-    if core_discord_api.is_paused():
+    if (core_discord_api.is_paused() or message.guild.id in _ambient_tasks
+            or len(_ambient_tasks) >= _MAX_AMBIENT_TASKS):
         return
     day = vivian_ambient_state._ambient_local_time(message.guild.id, now).date().isoformat()
     context = vivian_ambient_state._ambient_claim_reply(message.guild.id, now, day)
     if context is not None:
-        asyncio.create_task(_ambient_reply(message, context))
+        guild_id = message.guild.id
+        task = asyncio.create_task(_ambient_reply(message, context), name=f"vivian-ambient:{guild_id}")
+        _ambient_tasks[guild_id] = task
+        task.add_done_callback(lambda _: _ambient_tasks.pop(guild_id, None))
 
 
 @tasks.loop(minutes=5)

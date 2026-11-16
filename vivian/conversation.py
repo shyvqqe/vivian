@@ -16,6 +16,7 @@ from vivian import dialogue as vivian_dialogue
 from vivian import diagnostics as vivian_diagnostics
 from vivian import diagnostic_views as vivian_diagnostic_views
 from vivian import memory as vivian_memory
+from vivian import memory_controls_store
 from vivian import personality as vivian_personality
 from vivian import memory_card as vivian_memory_card
 from vivian import reactions as vivian_reactions
@@ -92,9 +93,9 @@ async def _load_vivian_memory(message):
     except Exception as error:
         print(f"[AI Memory] Context unavailable; message_id={message.id}; "
               f"error={type(error).__name__}", flush=True)
-        if message.guild is None:
-            return core_state.chat_history.get((0, message.channel.id, message.author.id), []), ""
-        return [], ""
+        scope = ((0, message.channel.id) if message.guild is None
+                 else vivian_memory._ai_memory_scope(message, require_history=True))
+        return (vivian_memory._cached_prior_history(scope, message) if scope else []), ""
 
 
 async def _prepare_diagnostic(message, history):
@@ -115,7 +116,7 @@ async def _prepare_media(message):
         return [], 1
 
 
-async def _handle_vivian_conversation(message, reply_target):
+async def _handle_vivian_conversation(message, reply_target, *, implicit=False):
     started = time.monotonic()
     if core_discord_api.is_message_paused(message.channel.id):
         print(
@@ -139,6 +140,9 @@ async def _handle_vivian_conversation(message, reply_target):
         memory_ready = time.monotonic()
         reply_context = utils_helpers._vivian_reply_text(reply_target)
         reply_id = getattr(reply_target, "id", None)
+        scope = (message.guild.id, message.channel.id) if message.guild else None
+        if reply_id in memory_controls_store.PURGED_SOURCE_IDS.get(scope, ()):
+            reply_context = ""
         if reply_context and not any(item.get("_message_id") == reply_id for item in history):
             history.append({"role": "assistant", "content": reply_context[:1200],
                             "_timestamp": reply_target.created_at.timestamp(),
@@ -220,7 +224,7 @@ async def _handle_vivian_conversation(message, reply_target):
                     notice = (f"Для выбранной модели {core_ai_models.display_name(selected)} API недоступен. "
                               "Можно выбрать подключённую модель через /ai.")
                 else:
-                    notice = "ИИ пока недоступен. Для диалога нужен настроенный Gemini, Groq или OpenRouter."
+                    notice = "ИИ пока недоступен. Подключи Gemini, Groq, DeepSeek или OpenRouter."
                 raise core_ai_models.ModelUnavailable("Dialogue provider is not configured", public_message=notice)
             prompt_history, memory_context = vivian_memory._ai_memory_pack_context(
                 history[:-1], memory_context,
@@ -319,7 +323,7 @@ async def _handle_vivian_conversation(message, reply_target):
             f"kind={request_kind}; error={detail}",
             flush=True,
         )
-        if not reply_delivered and not limited and not core_discord_api.is_paused():
+        if not reply_delivered and not implicit and not limited and not core_discord_api.is_paused():
             try:
                 notice = (e.public_message if isinstance(e, core_ai_models.ModelUnavailable) else None)
                 retry_notice = ("У меня сейчас сбой. Попробуй написать чуть позже." if message.guild is None

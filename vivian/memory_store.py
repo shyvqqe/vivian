@@ -176,6 +176,8 @@ async def _load(scope):
 
 
 async def _ai_memory_load(scope):
+    if scope in state.AI_MEMORY_LOADED:
+        return
     await controls.guarded_memory_load(_load, scope)
 
 

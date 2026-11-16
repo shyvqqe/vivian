@@ -108,7 +108,8 @@ def _purge_sources(scope, uid, sources):
     for history_key, history in list(state.chat_history.items()):
         if history_key[:2] == scope:
             history[:] = [item for item in history if item.get("_message_id") not in sources]
-    if scope[1] == ambient_state.AMBIENT_CHAT_CHANNEL_ID:
+    setting = ambient_state.AMBIENT_CONFIG.get(scope[0], {})
+    if scope[1] == setting.get("channel_id", ambient_state.AMBIENT_CHAT_CHANNEL_ID):
         context = ambient_state.AMBIENT_CONTEXT.get(scope[0])
         if context is not None:
             ambient_state.AMBIENT_CONTEXT[scope[0]] = deque(

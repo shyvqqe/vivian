@@ -1,6 +1,7 @@
 from __future__ import annotations
 import re
 from vivian import followups as vivian_followups
+from vivian.creator import CREATOR_NAME
 
 
 CURRENT_TIME_PATTERN = re.compile(
@@ -28,13 +29,14 @@ CASUAL_CHECKIN_PATTERN = re.compile(
 )
 
 
+_CREATOR_HANDLE = re.escape(CREATOR_NAME)
 CREATOR_QUESTION_PATTERN = re.compile(
     r"\b(?:"
     r"кто\s+(?:(?:же|вообще)\s+)?(?:твой|ваш|твоя|ваша)\s+(?:создател[ья]|автор|разработчик|владелец|хозяин|создательница)|"
     r"кто\s+(?:тебя|тебе)\s+(?:создал[а-яё]*|сделал[а-яё]*|настроил[а-яё]*|"
     r"написал[а-яё]*|придумал[а-яё]*)|"
-    r"кто\s+(?:(?:же|вообще)\s+)?(?:такой\s+|такая\s+)?shyvae|shyvae\s+(?:это\s+кто|кто\s+такой)|"
-    r"расскажи\s+(?:мне\s+)?(?:про|о)\s+shyvae|чьё\s+ты\s+создание|"
+    rf"кто\s+(?:(?:же|вообще)\s+)?(?:такой\s+|такая\s+)?{_CREATOR_HANDLE}|{_CREATOR_HANDLE}\s+(?:это\s+кто|кто\s+такой)|"
+    rf"расскажи\s+(?:мне\s+)?(?:про|о)\s+{_CREATOR_HANDLE}|чьё\s+ты\s+создание|"
     r"кто\s+стоит\s+за\s+тобой|кто\s+автор\s+(?:vivian|вивиан|veyr)"
     r")\b",
     re.IGNORECASE,

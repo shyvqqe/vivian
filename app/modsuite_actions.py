@@ -7,6 +7,7 @@ import time
 import discord
 
 from core import config, guild_settings, modsuite_store as store
+from utils import components_v2 as v2
 
 
 _PRIVILEGED = ("administrator", "manage_guild", "manage_roles", "manage_channels", "ban_members", "kick_members")
@@ -73,7 +74,7 @@ async def log(guild, text):
     if channel is None:
         return False
     try:
-        await channel.send(text[:1900], allowed_mentions=discord.AllowedMentions.none())
+        await v2.send_message(channel, text[:1900], allowed_mentions=discord.AllowedMentions.none())
         return True
     except discord.DiscordException:
         return False
@@ -200,7 +201,7 @@ async def _apply(guild, item):
             try:
                 from commands.modsuite_views import appeal_notice
                 user = config.bot.get_user(user_id) or await config.bot.fetch_user(user_id)
-                await user.send(f"You were banned from {guild.name}. Reason: {item['reason'][:800]}", view=appeal_notice(guild.id, ban_case["id"]), allowed_mentions=discord.AllowedMentions.none())
+                await v2.send_message(user, f"You were banned from {guild.name}. Reason: {item['reason'][:800]}", view=appeal_notice(guild.id, ban_case["id"]), allowed_mentions=discord.AllowedMentions.none())
             except discord.DiscordException:
                 pass
     elif kind == "timeout":
@@ -242,13 +243,13 @@ async def _apply(guild, item):
         await store.history(guild.id, user_id, {"id": item["id"], "kind": kind, "reason": item["reason"], "actor_id": item["actor_id"]})
         if kind == "quarantine":
             from commands.modsuite_views import quarantine_notice
-            await channel.send(f"<@{user_id}>: use Verify to complete the private server challenge.", view=quarantine_notice(), allowed_mentions=discord.AllowedMentions(users=[discord.Object(user_id)]))
+            await v2.send_message(channel, f"<@{user_id}>: use Verify to complete the private server challenge.", view=quarantine_notice(), allowed_mentions=discord.AllowedMentions(users=[discord.Object(user_id)]))
     elif kind == "shadowmute":
         member = await _member(guild, user_id)
         await store.update_punishment(guild.id, item, state="active", lease_until=0, next_at=item["ends_at"])
         if member:
             try:
-                await member.send(f"Moderators enabled automatic deletion of your messages in {guild.name} until <t:{int(item['ends_at'])}:F>. Your messages are not secretly hidden: Discord messages are deleted.", allowed_mentions=discord.AllowedMentions.none())
+                await v2.send_message(member, f"Moderators enabled automatic deletion of your messages in {guild.name} until <t:{int(item['ends_at'])}:F>. Your messages are not secretly hidden: Discord messages are deleted.", allowed_mentions=discord.AllowedMentions.none())
             except discord.DiscordException:
                 pass
     await log(guild, f"Case `{item['id']}`: {kind} applied to `{user_id}`. Reason: {item['reason'][:700]}")

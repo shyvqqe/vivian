@@ -10,6 +10,7 @@ import discord
 from discord.ext import tasks
 
 from core import config, guild_settings, life_store as store
+from utils import components_v2 as v2
 
 
 _log = logging.getLogger(__name__)
@@ -205,7 +206,7 @@ async def _send_job(guild, key, channel, embed):
         return
     await store.mark_delivery(guild.id, key)
     try:
-        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none(), nonce=key[-25:])
+        await v2.send_message(channel, embed=embed, allowed_mentions=discord.AllowedMentions.none(), nonce=key[-25:])
     except (discord.Forbidden, discord.NotFound):
         await store.finish_job(guild.id, key)
     except Exception:

@@ -54,14 +54,20 @@ COMMAND_MODULES = [
     "ai_moderation",
     "antispam",
     "card",
+    "chat_analysis",
     "changelog",
     "daily",
+    "elite_broadcast",
+    "elite_lab",
+    "elite_puzzle",
+    "elite_studio",
     "feedback",
     "general",
     "help_panel",
     "moderation",
     "moderation_prefix",
     "music",
+    "music_download",
     "music_prefix",
     "video_download",
     "project",
@@ -73,6 +79,9 @@ COMMAND_MODULES = [
     "crossroads",
     "exchange",
     "community_play",
+    "community_poll",
+    "community_premiere",
+    "community_quiz",
     "economy",
     "setup",
     "life",
@@ -158,7 +167,7 @@ async def setup_hook():
         if ai_models.has_provider(default_model):
             print(f"[AI] Automatic model configured: {default_model}.", flush=True)
         else:
-            print("[AI] No provider configured. Set GROQ_API_KEY, GEMINI_API_KEY or OPENROUTER_API_KEY.", flush=True)
+            print("[AI] No provider configured. Set GROQ_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY or OPENROUTER_API_KEY.", flush=True)
     except Exception as error:
         print(f"[AI] Startup check failed ({type(error).__name__}).", flush=True)
 

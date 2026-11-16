@@ -17,29 +17,17 @@ from vivian import conversation as vivian_conversation
 from vivian import memory as vivian_memory
 from vivian import chat_impact as vivian_chat_impact
 from utils import helpers as utils_helpers
-from app import chat_routing, message_observers
+from app import chat_routing, file_scans, message_observers
 
 
-# Prefix commands use a short route *after* the moderation gates.  Running a
-# music/mod command through chat routing, AI memory and ambient observation
-# adds latency without providing any useful conversational context.
-_FAST_PREFIX_COMMANDS = frozenset({
-    "play", "stop", "skip", "pause", "resume", "volume", "loop", "queue",
-    "mute", "unmute", "ban", "kick", "warn", "download", "dl", "video",
-})
-
-
-async def _fast_prefix_context(message):
-    """Find an existing registered command; do not invent/parse permissions."""
-    content = getattr(message, "content", "") or ""
-    if not content.startswith("!"):
-        return None
-    name = content[1:].split(None, 1)[0].casefold() if content[1:].strip() else ""
-    if name not in _FAST_PREFIX_COMMANDS:
-        return None
-    ctx = await core_config.bot.get_context(message)
-    if getattr(ctx, "valid", False) and getattr(ctx.command, "name", None) in _FAST_PREFIX_COMMANDS:
-        return ctx
+async def _prefix_context(message):
+    content = message.content or ""
+    prefix = core_config.command_prefix(core_config.bot, message)
+    prefixes = (prefix,) if isinstance(prefix, str) else tuple(prefix)
+    if content.startswith(prefixes):
+        context = await core_config.bot.get_context(message)
+        if context.valid:
+            return context
     return None
 
 
@@ -66,7 +54,9 @@ async def _deliver_chat_turn(message, trigger, reply_target):
             f"[AI] Dialogue acquired; message_id={message.id}; trigger={trigger}; "
             f"lock_wait_ms={(time.monotonic() - lock_started) * 1000:.0f}", flush=True,
         )
-        if await vivian_conversation._handle_vivian_conversation(message, reply_target):
+        if await vivian_conversation._handle_vivian_conversation(
+            message, reply_target, implicit=trigger == "followup",
+        ):
             chat_routing.note_reply(message)
 
 
@@ -78,15 +68,16 @@ async def _handle_direct_message(message, stats_snapshot):
     stats_task = message_observers.start_observer("stats", message.id, persist_stats, timings)
     try:
         # In DMs a registered command does not need conversation preparation.
-        context = await _fast_prefix_context(message)
+        context = await _prefix_context(message)
         if context is not None:
             await core_config.bot.invoke(context)
             return
         trigger, reply_target = await chat_routing.select_turn(message)
-        if trigger is not None:
-            await _deliver_chat_turn(message, trigger, reply_target)
-        else:
-            await core_config.bot.process_commands(message)
+        if trigger is not None and chat_routing.reserve_turn(message, trigger):
+            try:
+                await _deliver_chat_turn(message, trigger, reply_target)
+            finally:
+                chat_routing.release_turn(message)
     finally:
         if stats_task is None:
             await message_observers.run_observer("stats", message.id, persist_stats, timings)
@@ -157,12 +148,14 @@ async def on_message(message):
 
     observers, observer_timings = [], {}
     trigger = None
+    turn_reserved = False
     stats_started = False
     try:
         moderation_started = time.monotonic()
         if await commands_ai_moderation._moderate_ai_content(message, now):
             return
         moderation_ms = (time.monotonic() - moderation_started) * 1000
+        file_scans.enqueue_message(message)
         # Both moderation passes retain priority. Accepted counters are copied
         # above, so newer gateway messages cannot mutate a pending snapshot.
         operations = (
@@ -181,22 +174,25 @@ async def on_message(message):
             else:
                 observers.append(task)
         commands_activity._record_chat_pulse(message, now)
-        # Dispatch only registered prefix music/moderation commands here. The
-        # original moderation gates and the background stats/community
-        # observers have already run; Discord.py still performs ALL command
-        # checks and permission decorators through bot.invoke(context).
-        fast_context = await _fast_prefix_context(message)
-        if fast_context is not None:
-            await core_config.bot.invoke(fast_context)
+        # Dispatch registered commands after moderation and before conversation.
+        # bot.invoke still executes the command's permission checks.
+        command_context = await _prefix_context(message)
+        if command_context is not None:
+            await core_config.bot.invoke(command_context)
             return
-        # Public-video links get an opt-in button menu before AI dialogue.
-        # Anti-spam, modsuite and AI moderation already approved the message.
-        try:
-            if await commands_video_auto.maybe_offer_download(message):
-                return
-        except Exception as exc:
-            print(f"[VideoAuto] observer failed ({type(exc).__name__})", flush=True)
         trigger, reply_target = await chat_routing.select_turn(message)
+        if trigger is not None and not vivian_ambient_state.ambient_stop_requested(
+            message.content or "", directly_addressed=True,
+        ):
+            turn_reserved = chat_routing.reserve_turn(message, trigger)
+        # A direct question about a link takes priority over the download offer.
+        # Anti-spam, modsuite and AI moderation already approved the message.
+        if trigger is None:
+            try:
+                if await commands_video_auto.maybe_offer_download(message):
+                    return
+            except Exception as exc:
+                print(f"[VideoAuto] observer failed ({type(exc).__name__})", flush=True)
         memory_started = time.monotonic()
         try:
             # Privacy filtering and the current turn enter memory before
@@ -212,7 +208,7 @@ async def on_message(message):
             print(f"[Ambient] Observer failed; message_id={message.id}; error={error!r}", flush=True)
         ambient_ms = (time.monotonic() - ambient_started) * 1000
 
-        if trigger:
+        if turn_reserved:
             print(
                 f"[AI] Chat turn received; message_id={message.id}; trigger={trigger}; "
                 f"instance={core_config.BOT_INSTANCE_ID}; pid={os.getpid()}; "
@@ -222,8 +218,9 @@ async def on_message(message):
                 flush=True,
             )
             await _deliver_chat_turn(message, trigger, reply_target)
-        await core_config.bot.process_commands(message)
     finally:
+        if turn_reserved:
+            chat_routing.release_turn(message)
         if not stats_started:
             # Rejected AI-moderation candidates were counted before this
             # refactor too. Preserve that durability without storing chat text.

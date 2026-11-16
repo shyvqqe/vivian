@@ -72,7 +72,9 @@ async def highlight(message, settings=None, title="A message is getting reaction
     try:
         if not _public(message.channel, message.guild) or not _public(channel, message.guild):
             return
-        await helpers._send_message_once(channel, f"**{title}**\n{message.jump_url}", community_play.nonce(key))
+        await helpers._send_message_once(
+            channel, f"**{title}**\n{message.jump_url}", community_play.nonce(key), components_v2=True,
+        )
         await hub_store.put(message.guild.id, "hub", key, {"claimed": True, "state": "sent", "created_at": time.time()})
     except Exception as error:
         _log("highlight publication unconfirmed", error)
@@ -236,7 +238,9 @@ async def _finish_game(guild, game, settings):
         text = f"**Word hunt solved**\nMember `{claimed['winner_id']}` found **{claimed['answer']}**."
         if claimed.get("reward_amount"):
             text += f" Reward: {claimed['reward_amount']} {discord.utils.escape_mentions(str(claimed.get('reward_currency', 'sparks')))}."
-        await helpers._send_message_once(channel, text, community_play.nonce("winner:" + claimed["token"]))
+        await helpers._send_message_once(
+            channel, text, community_play.nonce("winner:" + claimed["token"]), components_v2=True,
+        )
     except Exception as error:
         def uncertain(value):
             if value.get("token") == game["token"]:

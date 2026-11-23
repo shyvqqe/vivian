@@ -571,7 +571,7 @@ pub async fn remove(
     Ok(())
 }
 
-#[poise::command(slash_command, prefix_command)]
+#[poise::command(slash_command, prefix_command, rename = "clear_queue")]
 pub async fn clear(ctx: Context<'_>) -> Result<()> {
     let player = player(ctx, guild_id(ctx)?).await?;
     let count = player.get_queue().get_count().await?;

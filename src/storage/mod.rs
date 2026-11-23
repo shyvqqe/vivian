@@ -1,6 +1,10 @@
 use anyhow::Result;
 use chrono::Datelike;
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use std::str::FromStr;
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    SqlitePool,
+};
 
 #[derive(Clone)]
 pub struct Store {
@@ -24,9 +28,10 @@ pub struct PrivateRoom {
 
 impl Store {
     pub async fn connect(url: &str) -> Result<Self> {
+        let options = SqliteConnectOptions::from_str(url)?.create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(url)
+            .connect_with(options)
             .await?;
         let store = Self { pool };
         store.migrate().await?;

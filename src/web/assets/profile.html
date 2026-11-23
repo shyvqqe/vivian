@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#0e0d0c"><title>Public profile · Vivian</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="theme.css"><link rel="stylesheet" href="dashboard.css"></head>
+<body class="hub-page"><header class="hub-header"><a class="brand" data-home href="index.html">vivian<span class="brand-period">.</span></a><nav><a data-home href="index.html">Home</a><a id="dashboard-home" href="dashboard.html">Dashboard</a></nav></header><main class="hub-main"><div class="eyebrow">VIVIAN / COMMUNITY PROFILE</div><h1>A little more<br><em>than a username.</em></h1><p class="hub-copy">Public profiles appear only when the server enables them and the member chooses to publish their own profile.</p>
+<form id="profile-search" class="hub-profile-form"><label>Server ID<input id="profile-guild" inputmode="numeric" pattern="[1-9][0-9]{0,19}" required></label><label>Member ID<input id="profile-member" inputmode="numeric" pattern="[1-9][0-9]{0,19}" required></label><button class="primary-btn" type="submit">Open profile ↗</button></form><div id="profile-message" class="hub-notice" role="status" aria-live="polite">Choose a public profile.</div>
+<section id="public-profile" class="public-profile hub-panel" hidden>
+  <div class="profile-identity"><div><div id="profile-server" class="eyebrow"></div><h2 id="profile-name"></h2><p id="profile-status" class="profile-status"></p></div><img id="profile-avatar" width="136" height="136" alt="Member avatar"></div>
+  <div id="profile-metrics" class="hub-metrics"></div>
+  <progress id="profile-progress" class="profile-progress" aria-label="XP toward the next level" max="500" value="0"></progress>
+  <p id="profile-xp" class="hub-copy"></p><div id="profile-badges" class="profile-badges"></div>
+  <p id="profile-relationship" class="profile-status"></p>
+  <section id="profile-friends" class="profile-shared" hidden><h3>Friends</h3><ul id="profile-friend-list" class="profile-badges"></ul></section>
+  <section id="profile-wall-section" class="profile-shared" hidden><h3>Wall</h3><div id="profile-wall" class="profile-wall"></div></section>
+</section></main><script src="config.js"></script><script src="profile.js"></script></body></html>

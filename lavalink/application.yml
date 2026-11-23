@@ -6,6 +6,7 @@ lavalink:
   server:
     password: ${LAVALINK_SERVER_PASSWORD:change-this-password}
     sources:
+      # YouTube is provided by youtube-source below. The embedded source must be off.
       youtube: false
       soundcloud: true
       bandcamp: false
@@ -27,10 +28,12 @@ lavalink:
 
 plugins:
   youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
     clients:
       - MUSIC
-      - MWEB
+      - ANDROID_VR
       - WEB
       - WEBEMBEDDED
-      - ANDROID_MUSIC
-      - TVHTML5_SIMPLY

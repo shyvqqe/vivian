@@ -1,0 +1,28 @@
+services:
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4.2.2
+    container_name: vivian-lavalink
+    restart: unless-stopped
+    environment:
+      LAVALINK_SERVER_PASSWORD: ${LAVALINK_PASSWORD:-change-this-password}
+    volumes:
+      - ./lavalink/application.yml:/opt/Lavalink/application.yml:ro
+    ports:
+      - "2333:2333"
+  vivian:
+    build: .
+    container_name: vivian-bot
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      LAVALINK_ADDRESS: lavalink:2333
+      DATABASE_URL: sqlite:///app/data/vivian.db
+      PORT: 10000
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "10000:10000"
+    depends_on:
+      lavalink:
+        condition: service_started
+

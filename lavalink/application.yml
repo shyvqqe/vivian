@@ -1,15 +1,16 @@
 server:
   port: 2333
   address: 0.0.0.0
+
 lavalink:
   server:
-    password: youshallnotpass
+    password: ${LAVALINK_SERVER_PASSWORD:change-this-password}
     sources:
-      youtube: true
-      bandcamp: true
+      youtube: false
       soundcloud: true
-      twitch: true
-      vimeo: true
+      bandcamp: false
+      twitch: false
+      vimeo: false
       http: true
       local: false
     filters:
@@ -17,41 +18,21 @@ lavalink:
     bufferDurationMs: 400
     youtubePlaylistLoadLimit: 50
     playerUpdateInterval: 5
-    youtubeSearchEnabled: true
     soundcloudSearchEnabled: true
     gc-warnings: true
-    youtube:
-      playlistLoadLimit: 50
   plugins:
-    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.5.0"
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.2"
+      snapshot: false
       repository: "https://maven.lavalink.dev/releases"
-    - dependency: "com.github.topi314.lavasearch:lavasearch-plugin:1.0.0"
-      repository: "https://maven.lavalink.dev/releases"
+
 plugins:
-  lavasrc:
-    providers:
-      - 'ytsearch:"%ISRC%"'
-      - "ytsearch:%QUERY%"
-      - "scsearch:%QUERY%"
-      - "spsearch:%QUERY%"
-      - "amsearch:%QUERY%"
-    sources:
-      youtube: true
-      soundcloud: true
-      bandcamp: true
-      twitch: true
-      vimeo: true
-      spotify: true
-      applemusic: true
-      deezer: false
-      yandexmusic: false
-    spotify:
-      preferAnonymousToken: true
-    appleMusic:
-      countryCode: US
-  lavasearch:
-    sources:
-      - spotify
-      - youtube
-      - soundcloud
-      - applemusic
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    clients:
+      - MUSIC
+      - ANDROID_VR
+      - WEB
+      - WEBEMBEDDED

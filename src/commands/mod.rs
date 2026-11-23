@@ -12,6 +12,7 @@ pub(crate) type Context<'a> = poise::Context<'a, crate::Data, anyhow::Error>;
 pub fn all() -> Vec<poise::Command<crate::Data, anyhow::Error>> {
     vec![
         general::help(),
+        general::about(),
         general::ping(),
         birthday::birthday(),
         ai::ai(),

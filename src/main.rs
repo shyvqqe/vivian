@@ -330,6 +330,39 @@ async fn event_handler(framework: FrameworkContext<'_>, event: &serenity::FullEv
     Ok(())
 }
 
+fn command_error_detail(command: &str, error: &Error) -> String {
+    let chain = format!("{error:#}");
+    let lower = chain.to_ascii_lowercase();
+    let missing_permission = lower.contains("50013")
+        || lower.contains("missing permissions")
+        || lower.contains("missing permission")
+        || (lower.contains("discord")
+            && (lower.contains("403 forbidden") || lower.contains("status code: 403")));
+    if missing_permission {
+        if let Some(required) = permissions::bot_requirement_for_command(command) {
+            let hierarchy = if matches!(command, "kick" | "ban" | "timeout" | "untimeout") {
+                " Для действий над участником также проверь, что его высшая роль ниже роли Vivian."
+            } else if command == "shop_buy" {
+                " Проверь также, что роль Vivian стоит выше покупаемой косметической роли."
+            } else {
+                " Проверь также переопределения прав в канале."
+            };
+            return format!(
+                "Для команды `/{command}` у Vivian должно быть право **{required}**, но Discord отклонил действие. Проверь это право у роли бота.{hierarchy} `Administrator` не требуется."
+            );
+        }
+        return format!(
+            "Discord отклонил действие команды `/{command}` из-за прав. Проверь доступ Vivian к этому каналу и права, необходимые именно этой команде; `Administrator` не требуется."
+        );
+    }
+    if lower.contains("50001") || lower.contains("missing access") {
+        return format!(
+            "У Vivian нет доступа к каналу или участнику для команды `/{command}`. Проверь право **View Channels (Просматривать каналы)** и переопределения доступа."
+        );
+    }
+    chain.chars().take(900).collect()
+}
+
 async fn command_error_reply(ctx: poise::Context<'_, Data, Error>, detail: String) {
     let lower = detail.to_lowercase();
     let detail = if lower.contains("429")
@@ -337,6 +370,18 @@ async fn command_error_reply(ctx: poise::Context<'_, Data, Error>, detail: Strin
         || lower.contains("too many requests")
     {
         "Сервис временно ограничил запросы. Подожди пару минут и попробуй ещё раз.".to_owned()
+    } else if lower.contains("у vivian должно быть право")
+        || lower.contains("роли vivian не хватает права")
+        || lower.contains("отклонил действие команды")
+        || lower.contains("у vivian нет доступа к каналу")
+    {
+        detail.chars().take(900).collect::<String>()
+    } else if lower.contains("50013")
+        || lower.contains("missing permissions")
+        || lower.contains("missing permission")
+        || lower.contains("403 forbidden")
+    {
+        "Discord отклонил действие из-за отсутствующего права. Проверь право, указанное для этой команды в сообщении, и права роли Vivian в канале.".to_owned()
     } else if lower.contains("lavalink") || lower.contains("voice connection") {
         "Музыкальный сервер сейчас не ответил. Проверь подключение Lavalink и попробуй ещё раз через минуту.".to_owned()
     } else if lower.contains("sqlite") || lower.contains("database") || lower.contains("row decode")
@@ -370,7 +415,7 @@ fn framework_error_handler(
     Box::pin(async move {
         match error {
             poise::FrameworkError::Command { ctx, error, .. } => {
-                let raw = error.to_string();
+                let raw = command_error_detail(&ctx.command().name, &error);
                 tracing::error!(
                     command = %ctx.command().name,
                     user_id = ctx.author().id.get(),
@@ -390,49 +435,73 @@ fn framework_error_handler(
                 ctx,
                 remaining_cooldown,
                 ..
-            } => command_error_reply(
-                ctx,
-                format!("Команда пока на паузе. Повтори через {} сек.", remaining_cooldown.as_secs().max(1)),
-            )
-            .await,
+            } => {
+                command_error_reply(
+                    ctx,
+                    format!(
+                        "Команда пока на паузе. Повтори через {} сек.",
+                        remaining_cooldown.as_secs().max(1)
+                    ),
+                )
+                .await
+            }
             poise::FrameworkError::MissingBotPermissions {
                 ctx,
                 missing_permissions,
                 ..
-            } => command_error_reply(
-                ctx,
-                format!("Vivian needs this permission to run the command: **{}**. Проверь права бота на сервере и в текущем канале.", crate::permissions::describe(missing_permissions)),
-            )
-            .await,
+            } => {
+                let detail = format!(
+                    "Для команды `/{}` роли Vivian нужно право **{}**. Выдай это право роли бота и проверь переопределения прав канала. `Administrator` не требуется.",
+                    ctx.command().name,
+                    crate::permissions::describe(missing_permissions)
+                );
+                command_error_reply(ctx, detail).await;
+            }
             poise::FrameworkError::MissingUserPermissions {
                 ctx,
                 missing_permissions,
                 ..
-            } => command_error_reply(
-                ctx,
-                format!("You need this permission to run the command: **{}**. Для команды требуется указанное право участника.", missing_permissions.map(crate::permissions::describe).unwrap_or_else(|| "server or channel permissions".into())),
-            )
-            .await,
+            } => {
+                let detail = format!(
+                    "Для запуска `/{}` тебе нужно право участника **{}** на сервере. Это требование относится к пользователю команды, а не к роли Vivian.",
+                    ctx.command().name,
+                    missing_permissions.map(crate::permissions::describe).unwrap_or_else(|| "права сервера или канала".into())
+                );
+                command_error_reply(ctx, detail).await;
+            }
             poise::FrameworkError::GuildOnly { ctx, .. } => {
-                command_error_reply(ctx, "Эта команда работает только на сервере Discord.".into()).await;
+                command_error_reply(
+                    ctx,
+                    "Эта команда работает только на сервере Discord.".into(),
+                )
+                .await;
             }
             poise::FrameworkError::DmOnly { ctx, .. } => {
-                command_error_reply(ctx, "Эту команду нужно запускать в личных сообщениях с ботом.".into()).await;
+                command_error_reply(
+                    ctx,
+                    "Эту команду нужно запускать в личных сообщениях с ботом.".into(),
+                )
+                .await;
             }
             poise::FrameworkError::NsfwOnly { ctx, .. } => {
-                command_error_reply(ctx, "Эта команда доступна только в канале с возрастным ограничением.".into()).await;
+                command_error_reply(
+                    ctx,
+                    "Эта команда доступна только в канале с возрастным ограничением.".into(),
+                )
+                .await;
             }
             poise::FrameworkError::NotAnOwner { ctx, .. } => {
-                command_error_reply(ctx, "Эта команда доступна только владельцу бота.".into()).await;
+                command_error_reply(ctx, "Эта команда доступна только владельцу бота.".into())
+                    .await;
             }
             poise::FrameworkError::CommandCheckFailed { ctx, error, .. } => {
                 if let Some(error) = error {
                     tracing::warn!(error = %error, command = %ctx.command().name, "command check failed");
                 }
-                command_error_reply(ctx, "Команда недоступна здесь или у тебя недостаточно прав.".into()).await;
+                command_error_reply(ctx, format!("Команда `/{}` не прошла проверку доступа. Проверь, что запускаешь её на сервере и что Discord не ограничивает её для твоей роли в настройках сервера → Интеграции → Vivian.", ctx.command().name)).await;
             }
             poise::FrameworkError::PermissionFetchFailed { ctx, .. } => {
-                command_error_reply(ctx, "Не удалось проверить права Discord. Проверь доступ Vivian к серверу и повтори команду.".into()).await;
+                command_error_reply(ctx, "Не удалось проверить права участника. Проверь, что Vivian видит текущий канал и сервер; `Administrator` не нужен.".into()).await;
             }
             poise::FrameworkError::CommandPanic { ctx, .. } => {
                 tracing::error!(command = %ctx.command().name, user_id = ctx.author().id.get(), "command panicked");

@@ -1,10 +1,10 @@
 use anyhow::Result;
 use chrono::Datelike;
-use std::str::FromStr;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
 };
+use std::str::FromStr;
 
 #[derive(Clone)]
 pub struct Store {

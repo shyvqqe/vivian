@@ -31,7 +31,7 @@ pub async fn ai(
         let model = model.unwrap_or_else(|| match provider {
             Provider::Gemini => "gemini-3.8-flash".into(),
             Provider::Groq => "openai/gpt-oss-20b".into(),
-            Provider::DeepSeek => "deepseek-chat".into(),
+            Provider::DeepSeek => "deepseek-flash".into(),
             Provider::OpenRouter => "google/gemma-4-31b-it:free".into(),
         });
         let model = model.trim();

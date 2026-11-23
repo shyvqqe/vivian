@@ -2,14 +2,10 @@
 
 use poise::serenity_prelude as serenity;
 
-const PERMISSIONS: [(serenity::Permissions, &str); 20] = [
+const PERMISSIONS: [(serenity::Permissions, &str); 19] = [
     (
         serenity::Permissions::ADMINISTRATOR,
         "Administrator (Администратор)",
-    ),
-    (
-        serenity::Permissions::VIEW_AUDIT_LOG,
-        "View Audit Log (Просмотр журнала аудита)",
     ),
     (
         serenity::Permissions::MANAGE_GUILD,
@@ -95,5 +91,52 @@ pub fn describe(missing: serenity::Permissions) -> String {
         "permissions for this command (check server and channel overrides)".to_owned()
     } else {
         names.join(", ")
+    }
+}
+
+/// Exact permission expected from Vivian when a Discord action is rejected.
+/// The command checks remain at the command level so ordinary commands do not
+/// inherit unrelated moderation permissions.
+pub fn bot_requirement_for_command(command: &str) -> Option<&'static str> {
+    match command {
+        "timeout" | "untimeout" => Some("Moderate Members (Выдавать тайм-ауты)"),
+        "kick" => Some("Kick Members (Исключать участников)"),
+        "ban" | "unban" => Some("Ban Members (Блокировать участников)"),
+        "clear" => Some("Manage Messages (Управлять сообщениями)"),
+        "slowmode" | "lock" | "unlock" => Some("Manage Channels (Управлять каналами)"),
+        "room_create" | "room_setup" => {
+            Some("Manage Channels и Manage Roles (Управлять каналами и ролями)")
+        }
+        "room_rename" | "room_limit" | "room_delete" => {
+            Some("Manage Channels (Управлять каналами)")
+        }
+        "room_lock" | "room_visibility" | "room_invite" | "room_transfer" => {
+            Some("Manage Roles (Управлять ролями)")
+        }
+        "room_kick" => Some(
+            "Manage Roles (Управлять ролями) и Move Members (Перемещать участников), если участника нужно отключить из комнаты",
+        ),
+        "shop_buy" => Some("Manage Roles (Управлять ролями)"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bot_requirement_for_command;
+
+    #[test]
+    fn bot_requirements_are_specific_to_the_action() {
+        assert!(bot_requirement_for_command("kick")
+            .unwrap()
+            .contains("Kick Members"));
+        assert!(bot_requirement_for_command("ban")
+            .unwrap()
+            .contains("Ban Members"));
+        assert!(bot_requirement_for_command("clear")
+            .unwrap()
+            .contains("Manage Messages"));
+        assert!(bot_requirement_for_command("play").is_none());
+        assert!(bot_requirement_for_command("modlog").is_none());
     }
 }

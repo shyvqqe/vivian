@@ -333,7 +333,11 @@ async fn require_economy_manager(ctx: Context<'_>) -> Result<bool> {
         })
         .unwrap_or(false);
     if !has_manage_guild {
-        crate::ui::say(ctx, "Нужно право «Управлять сервером».").await?;
+        crate::ui::say(
+            ctx,
+            "Для настройки каталога тебе нужно право **Manage Server (Управлять сервером)** на твоей роли. Это право проверяется у человека, а не у роли Vivian.",
+        )
+        .await?;
         return Ok(false);
     }
     Ok(true)

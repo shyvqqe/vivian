@@ -70,7 +70,7 @@ pub async fn room_setup(
         .permissions(&bot_ctx.cache)?
         .contains(serenity::Permissions::MANAGE_GUILD)
     {
-        bail!("Настраивать приватные комнаты может администрация с правом «Управлять сервером».");
+        bail!("Для `/room_setup` вызывающему пользователю нужно право **Manage Server (Управлять сервером)**. Это право относится к человеку, который настраивает комнату.");
     }
     data(ctx).setup(bot_ctx, guild, category, enabled).await?;
     crate::ui::say(ctx, if enabled { "Приватные комнаты включены. Новые комнаты будут создаваться в выбранной категории или в категории Vivian." } else { "Создание приватных комнат отключено. Существующие комнаты продолжают работать." }).await?;

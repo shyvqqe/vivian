@@ -64,7 +64,8 @@ impl RoomManager {
         let needed =
             Permissions::VIEW_CHANNEL | Permissions::MANAGE_CHANNELS | Permissions::MANAGE_ROLES;
         if !permissions.contains(needed) {
-            bail!("Vivian нужны права «Видеть каналы», «Управлять каналами» и «Управлять ролями».");
+            let missing = Permissions::from_bits_truncate(needed.bits() & !permissions.bits());
+            bail!("Для создания приватных комнат роли Vivian не хватает: **{}**. `Administrator` не требуется.", crate::permissions::describe(missing));
         }
         Ok(())
     }

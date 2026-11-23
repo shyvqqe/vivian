@@ -27,8 +27,39 @@ async fn require_permission(ctx: Context<'_>, required: serenity::Permissions) -
         crate::ui::say(
             ctx,
             format!(
-                "This command requires **{}** from you (это право нужно участнику, запускающему команду).",
-                crate::permissions::describe(required)
+                "Для запуска `/{}` тебе нужно право **{}** на сервере. Это право проверяется у тебя, а права Vivian настраиваются отдельно.",
+                ctx.command().name,
+                crate::permissions::describe(required).trim_end()
+            ),
+        )
+        .await?;
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+async fn require_bot_permission(ctx: Context<'_>, required: serenity::Permissions) -> Result<bool> {
+    let Some(channel) = ctx.guild_channel().await else {
+        crate::ui::say(ctx, "Не удалось проверить права Vivian в этом канале.").await?;
+        return Ok(false);
+    };
+    let bot_id = serenity::UserId::new(ctx.data().bot_user_id);
+    let bot_missing_permission = ctx.guild().and_then(|guild| {
+        guild.members.get(&bot_id).map(|bot_member| {
+            !guild
+                .user_permissions_in(&channel, bot_member)
+                .contains(required)
+        })
+    });
+    // If the bot member is not cached, let Discord perform the operation; the
+    // centralized REST error handler will explain a rejected permission.
+    if bot_missing_permission == Some(true) {
+        crate::ui::say(
+            ctx,
+            format!(
+                "Роли Vivian не хватает права **{}** для команды `/{}`. Выдай это конкретное право роли Vivian и проверь переопределения прав канала. `Administrator` не требуется.",
+                crate::permissions::describe(required).trim_end(),
+                ctx.command().name
             ),
         )
         .await?;
@@ -102,7 +133,7 @@ pub async fn warn(
             }
             Err(error) => {
                 tracing::warn!(%error,user_id=user.id.get(),"warning ladder ban failed");
-                " · порог бана достигнут, но Discord отклонил действие".to_owned()
+                " · порог бана достигнут, но Vivian не смогла его выполнить: роли бота нужно право **Ban Members**. Проверьте также иерархию ролей и переопределения прав".to_owned()
             }
         }
     } else if count >= 5 || count >= 3 {
@@ -144,7 +175,7 @@ pub async fn warn(
             }
             Err(error) => {
                 tracing::warn!(%error,user_id=user.id.get(),"warning ladder timeout failed");
-                " · порог тайм-аута достигнут, но Discord отклонил действие".to_owned()
+                " · порог тайм-аута достигнут, но Vivian не смогла его выполнить: роли бота нужно право **Moderate Members**. Проверьте также, что роль Vivian выше роли участника и права канала не запрещают действие".to_owned()
             }
         }
     } else {
@@ -206,7 +237,8 @@ pub async fn modlog(
     ctx: Context<'_>,
     #[description = "Количество записей (до 50)"] limit: Option<i64>,
 ) -> Result<()> {
-    if !require_permission(ctx, serenity::Permissions::VIEW_AUDIT_LOG).await? {
+    // This command reads Vivian's SQLite moderation log, not Discord's Audit Log.
+    if !require_permission(ctx, serenity::Permissions::MODERATE_MEMBERS).await? {
         return Ok(());
     }
     let rows = ctx
@@ -279,6 +311,9 @@ pub async fn timeout(
     if !require_permission(ctx, serenity::Permissions::MODERATE_MEMBERS).await? {
         return Ok(());
     }
+    if !require_bot_permission(ctx, serenity::Permissions::MODERATE_MEMBERS).await? {
+        return Ok(());
+    }
     if !(1..=40_320).contains(&minutes) {
         anyhow::bail!("Срок должен быть от 1 минуты до 28 дней.");
     }
@@ -331,6 +366,9 @@ pub async fn untimeout(
     if !require_permission(ctx, serenity::Permissions::MODERATE_MEMBERS).await? {
         return Ok(());
     }
+    if !require_bot_permission(ctx, serenity::Permissions::MODERATE_MEMBERS).await? {
+        return Ok(());
+    }
     let guild = guild(ctx)?;
     guild
         .edit_member(
@@ -371,6 +409,9 @@ pub async fn kick(
     if !require_permission(ctx, serenity::Permissions::KICK_MEMBERS).await? {
         return Ok(());
     }
+    if !require_bot_permission(ctx, serenity::Permissions::KICK_MEMBERS).await? {
+        return Ok(());
+    }
     let guild = guild(ctx)?;
     guild
         .kick_with_reason(ctx.serenity_context(), user.id, reason.trim())
@@ -397,6 +438,9 @@ pub async fn ban(
     #[description = "Причина"] reason: String,
 ) -> Result<()> {
     if !require_permission(ctx, serenity::Permissions::BAN_MEMBERS).await? {
+        return Ok(());
+    }
+    if !require_bot_permission(ctx, serenity::Permissions::BAN_MEMBERS).await? {
         return Ok(());
     }
     let guild = guild(ctx)?;
@@ -431,6 +475,9 @@ pub async fn unban(
     if !require_permission(ctx, serenity::Permissions::BAN_MEMBERS).await? {
         return Ok(());
     }
+    if !require_bot_permission(ctx, serenity::Permissions::BAN_MEMBERS).await? {
+        return Ok(());
+    }
     let guild = guild(ctx)?;
     let reason = reason.unwrap_or_else(|| "Снятие блокировки модератором".into());
     guild
@@ -457,6 +504,9 @@ pub async fn clear(
     #[description = "Число последних сообщений от 1 до 100"] amount: u8,
 ) -> Result<()> {
     if !require_permission(ctx, serenity::Permissions::MANAGE_MESSAGES).await? {
+        return Ok(());
+    }
+    if !require_bot_permission(ctx, serenity::Permissions::MANAGE_MESSAGES).await? {
         return Ok(());
     }
     anyhow::ensure!(
@@ -498,6 +548,9 @@ pub async fn slowmode(
     if !require_permission(ctx, serenity::Permissions::MANAGE_CHANNELS).await? {
         return Ok(());
     }
+    if !require_bot_permission(ctx, serenity::Permissions::MANAGE_CHANNELS).await? {
+        return Ok(());
+    }
     anyhow::ensure!(seconds <= 21600, "Максимум 21600 секунд.");
     let channel = ctx.channel_id();
     channel
@@ -532,6 +585,9 @@ pub async fn slowmode(
 
 async fn set_channel_lock(ctx: Context<'_>, lock: bool) -> Result<()> {
     if !require_permission(ctx, serenity::Permissions::MANAGE_CHANNELS).await? {
+        return Ok(());
+    }
+    if !require_bot_permission(ctx, serenity::Permissions::MANAGE_CHANNELS).await? {
         return Ok(());
     }
     let guild = guild(ctx)?;
